@@ -19,8 +19,8 @@ class TestStackCompute {
 
         val end = method.instructions.get(4)
         val frames = analyzeFrames(
-            method.instructions,
             end,
+            listOf(),
             SimulatedFrame(
                 listOf(), listOf(
                     ObjectValueRef(
@@ -51,8 +51,8 @@ class TestStackCompute {
             method.instructions.size() - 1
         )
         val frames = analyzeFrames(
-            method.instructions,
             end,
+            listOf(),
             SimulatedFrame(
                 listOf(), listOf(
                     ObjectValueRef(

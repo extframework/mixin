@@ -4,6 +4,7 @@ import dev.extframework.mixin.api.ClassReference
 import dev.extframework.mixin.api.ClassReference.Companion.ref
 import dev.extframework.mixin.api.InjectCode
 import dev.extframework.mixin.api.InjectMethod
+import dev.extframework.mixin.api.InstructionSelector
 import dev.extframework.mixin.api.Mixin
 import dev.extframework.mixin.api.MixinApplicator
 import dev.extframework.mixin.internal.annotation.AnnotationProcessor
@@ -19,11 +20,12 @@ import org.objectweb.asm.tree.ClassNode
 
 public class MixinEngine(
     private val redefinitionFlags: RedefinitionFlags,
-    private val injectors: Map<Type, MixinInjector<*>> = defaultInjectors(redefinitionFlags),
     private val typeProvider: (ClassReference) -> Class<*>? = {
         Class.forName(it.name)
     },
-
+    private val injectors: Map<Type, MixinInjector<*>> = defaultInjectors(redefinitionFlags) {
+        typeProvider(ClassReference(it)) as Class<out InstructionSelector>
+    },
     private val annotationProcessor: AnnotationProcessor = AnnotationProcessorImpl {
         typeProvider(ClassReference(it)) as? Class<out Annotation> ?: throw ClassNotFoundException(it)
     }
@@ -195,12 +197,13 @@ public class MixinEngine(
     public companion object {
         public fun defaultInjectors(
             redefinitionFlags: RedefinitionFlags,
+            customPointProvider: (name: String) -> Class<out InstructionSelector>
         ): Map<Type, MixinInjector<*>> {
             val methodInjector = MethodInjector(redefinitionFlags)
 
             return mapOf(
                 Type.getType(InjectMethod::class.java) to methodInjector,
-                Type.getType(InjectCode::class.java) to InstructionInjector(methodInjector)
+                Type.getType(InjectCode::class.java) to InstructionInjector(methodInjector, customPointProvider)
             )
         }
     }

@@ -3,8 +3,16 @@ package dev.extframework.mixin.internal.analysis
 import org.objectweb.asm.Opcodes
 import org.objectweb.asm.tree.AbstractInsnNode
 import org.objectweb.asm.tree.InsnList
+import org.objectweb.asm.tree.InsnNode
+import org.objectweb.asm.tree.IntInsnNode
 import org.objectweb.asm.tree.JumpInsnNode
 import org.objectweb.asm.tree.LabelNode
+import org.objectweb.asm.tree.LookupSwitchInsnNode
+import org.objectweb.asm.tree.MethodInsnNode
+import org.objectweb.asm.tree.TableSwitchInsnNode
+import org.objectweb.asm.tree.TryCatchBlockNode
+import org.objectweb.asm.tree.TypeInsnNode
+import org.objectweb.asm.tree.VarInsnNode
 
 internal object CodeFlowAnalyzer {
     internal data class Block(
@@ -20,29 +28,68 @@ internal object CodeFlowAnalyzer {
         // DO NOT implement equals or hashcode
     }
 
+    private fun reasonableToThrow(
+        node: AbstractInsnNode
+    ) : Boolean {
+        return when (node) {
+            is MethodInsnNode -> true
+            is InsnNode -> node.opcode == Opcodes.ATHROW
+                    || (Opcodes.IDIV..Opcodes.DDIV).contains(node.opcode)
+                    || (Opcodes.IASTORE..Opcodes.SASTORE).contains(node.opcode)
+                    || (Opcodes.IALOAD..Opcodes.SALOAD).contains(node.opcode)
+            is TypeInsnNode -> node.opcode == Opcodes.CHECKCAST
+            else -> false
+        }
+    }
+
     internal fun buildFullFlowGraph(
-        code: InsnList
+        code: InsnList,
+        tryCatch: List<TryCatchBlockNode>
     ): CFGNode {
         // Keeping track of entries and exits, fast at the cost of some memory overhead
         val exitsInto = HashMap<AbstractInsnNode, MutableList<CFGNode>>()
         val exitsBy = HashMap<CFGNode, List<AbstractInsnNode>>()
         val nodes = HashMap<AbstractInsnNode, CFGNode>()
 
+        val tryCatchIndices = tryCatch.flatMapTo(HashSet()) { block ->
+            ((code.indexOf(block.start))..(code.indexOf(block.end) - 1)).map {
+                it to block
+            }
+        }.groupBy {
+            it.first
+        }.mapValues {
+            it.value.map { entry -> entry.second }
+        }
+
+        // TODO intentionally not supporting JSR/RET
         // It's either 2*O(n) or O(n^2)
         code.forEach { thisNode ->
-            val goesTo: List<AbstractInsnNode> = if (thisNode is JumpInsnNode) {
-                if ((Opcodes.IFEQ..Opcodes.IF_ACMPNE).contains(thisNode.opcode)) {
-                    listOfNotNull(
-                        thisNode.label, thisNode.next
-                    )
+            val goesTo: List<AbstractInsnNode> = run {
+                val tryCatchCase = if (tryCatchIndices.containsKey(code.indexOf(thisNode)) ) {
+                    tryCatchIndices[code.indexOf(thisNode)]!!.map { it.handler }
+                } else listOf()
+
+                val basicCases = if (thisNode is JumpInsnNode) {
+                    if (Opcodes.GOTO == thisNode.opcode) {
+                        listOfNotNull(thisNode.label)
+                    } else {
+                        listOfNotNull(
+                            thisNode.label, thisNode.next
+                        )
+                    }
+                } else if (thisNode is TableSwitchInsnNode) {
+                    thisNode.labels + thisNode.dflt
+                } else if (thisNode is LookupSwitchInsnNode) {
+                    thisNode.labels + thisNode.dflt
+                } else if (isReturn(thisNode.opcode) || Opcodes.ATHROW == thisNode.opcode) {
+                    listOf()
                 } else {
-                    listOfNotNull(thisNode.label)
+                    listOfNotNull(thisNode.next)
                 }
-            } else if (isReturn(thisNode.opcode) || Opcodes.ATHROW == thisNode.opcode) {
-                listOf()
-            } else {
-                listOfNotNull(thisNode.next)
+
+                tryCatchCase + basicCases
             }
+
 
             val node = CFGNode(
                 listOf(thisNode),
@@ -71,7 +118,7 @@ internal object CodeFlowAnalyzer {
 
     private fun isReturn(
         opcode: Int
-    ) : Boolean {
+    ): Boolean {
         return (Opcodes.IRETURN..Opcodes.RETURN).contains(opcode)
     }
 
@@ -117,8 +164,6 @@ internal object CodeFlowAnalyzer {
             it.entersBy.remove(second)
             it.entersBy.add(new)
         }
-
-        new.entersBy
 
         return new
     }
@@ -239,22 +284,47 @@ internal object CodeFlowAnalyzer {
 
     }
 
+    // Dijkstras
+    public fun shortestPath(
+        start: CFGNode,
+        end: CFGNode
+    ): List<CFGNode> {
+        val perimeter = ArrayList<CFGNode>()
+        val visited = HashSet<CFGNode>()
 
-//        val predecessors = HashSet<CFGNode>()
-//        val next = LinkedList<CFGNode>()
-//        next.add(node)
-//
-//        while (next.isNotEmpty()) {
-//            val curr = next.pop()
-//
-//            for (parent in curr.entersBy) {
-//                if (predecessors.add(parent)) {
-//                    next.add(parent)
-//                }
-//            }
-//        }
-//
-//        return predecessors
+        val distTo = HashMap<CFGNode, Int>()
+        val edgeTo = HashMap<CFGNode, CFGNode>()
+
+        perimeter.add(start)
+        distTo[start] = 0
+
+        fun assemble(curr: CFGNode?): List<CFGNode> {
+            if (curr == null) return listOf()
+
+            return listOf(curr) + assemble(edgeTo[curr])
+        }
+
+        while (!perimeter.isEmpty()) {
+            val current = perimeter.removeAt(0)
+            if (!visited.add(current)) continue
+
+            if (current == end) return assemble(current)
+
+            for (exit in current.exitsBy) {
+                perimeter.add(exit)
+
+                val currentDist = distTo[current]!! + exit.instructions.size
+                val previousDist = distTo[exit] ?: Int.MAX_VALUE
+
+                if (currentDist < previousDist) {
+                    distTo[exit] = currentDist
+                    edgeTo[exit] = current
+                }
+            }
+        }
+
+        throw Exception("No path between CFG nodes?")
+    }
 
     // All CFGs must eventually exit to the same node, picking 1 path
     // over another cannot be guaranteed to be faster so always following

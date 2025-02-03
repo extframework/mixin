@@ -1,25 +1,20 @@
 package dev.extframework.mixin.internal.inject.impl.code
 
+import dev.extframework.mixin.api.FieldAccessType
 import dev.extframework.mixin.api.InjectionBoundary
+import dev.extframework.mixin.api.InstructionSelector
 import org.objectweb.asm.Opcodes
 import org.objectweb.asm.Type
 import org.objectweb.asm.commons.Method
 import org.objectweb.asm.tree.AbstractInsnNode
+import org.objectweb.asm.tree.FieldInsnNode
 import org.objectweb.asm.tree.InsnList
 import org.objectweb.asm.tree.InvokeDynamicInsnNode
+import org.objectweb.asm.tree.LdcInsnNode
 import org.objectweb.asm.tree.MethodInsnNode
-
-public interface InstructionSelector {
-    public val ordinal: Int
-
-    public fun select(
-        instructions: InsnList,
-    ): List<AbstractInsnNode>
-}
 
 public data class BoundarySelector(
     public val boundary: InjectionBoundary,
-    override val ordinal: Int,
 ) : InstructionSelector {
     override fun select(instructions: InsnList): List<AbstractInsnNode> {
         fun isReturn(opcode: Int): Boolean {
@@ -54,26 +49,54 @@ public class InvocationSelector(
     public val owner: Type,
     public val method: Method,
     public val opcode: Int?,
-    override val ordinal: Int,
 ) : InstructionSelector {
     override fun select(instructions: InsnList): List<AbstractInsnNode> {
-        return listOf(
-            instructions
-                .filter { if (opcode != null) it.opcode == opcode else true }
-                .filter { (Opcodes.INVOKEVIRTUAL..Opcodes.INVOKEDYNAMIC).contains(it.opcode) }
-                .filter { node ->
-                    when (node) {
-                        is MethodInsnNode -> {
-                            node.owner == owner.internalName && Method(node.name, node.desc) == method
-                        }
-
-                        is InvokeDynamicInsnNode -> {
-                            node.bsm.owner == owner.internalName && Method(node.name, node.desc) == method
-                        }
-
-                        else -> throw Exception("Invalid bytecode?")
+        return instructions
+            .filter { if (opcode != null) it.opcode == opcode else true }
+            .filter { (Opcodes.INVOKEVIRTUAL..Opcodes.INVOKEDYNAMIC).contains(it.opcode) }
+            .filter { node ->
+                when (node) {
+                    is MethodInsnNode -> {
+                        node.owner == owner.internalName && Method(node.name, node.desc) == method
                     }
-                }[ordinal]
-        )
+
+                    is InvokeDynamicInsnNode -> {
+                        node.bsm.owner == owner.internalName && Method(node.name, node.desc) == method
+                    }
+
+                    else -> throw Exception("Invalid bytecode?")
+                }
+            }
+    }
+}
+
+public class FieldAccessSelector(
+    public val owner: Type,
+    public val name: String,
+    public val access: FieldAccessType,
+) : InstructionSelector {
+    override fun select(instructions: InsnList): List<AbstractInsnNode> {
+        return instructions
+            .filter {
+               access.opcodes.contains(it.opcode)
+            }
+            .filterIsInstance<FieldInsnNode>()
+            .filter { node ->
+                node.owner == owner.internalName && node.name == name
+            }
+    }
+}
+
+public class OpcodeSelector(
+    public val opcode: Int,
+    public val ldc: String?,
+) : InstructionSelector {
+    override fun select(instructions: InsnList): List<AbstractInsnNode> {
+        return instructions.filter { it.opcode == opcode }
+            .filter {
+                if (ldc != null) {
+                    it is LdcInsnNode && it.cst.toString() == ldc
+                } else true
+            }
     }
 }

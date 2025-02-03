@@ -11,16 +11,13 @@ public interface Stack {
     public fun <T> get(index: Int): T
 
     public fun set(index: Int, value: Any?)
-//    public fun <T> pop(): T
-//
-//    public fun <T : Any> push(value: T)
-//
-//    public fun <T> push(value: T, type: JvmType)
+}
 
-//    public data class Stacked(
-//        @JvmField
-//        val value: Any?,
-//        @JvmField
-//        val type: JvmType
-//    )
+public fun <T> Stack.replaceLast(value: T) : T {
+    if (size == 0) throw NoSuchElementException("Stack is empty.")
+
+    val old = get<T>(size - 1)
+    set(size - 1, value)
+
+    return old
 }

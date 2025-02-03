@@ -9,7 +9,6 @@ import dev.extframework.mixin.api.InjectCode
 import dev.extframework.mixin.api.InjectionBoundary.*
 import dev.extframework.mixin.api.Mixin
 import dev.extframework.mixin.api.Select
-import dev.extframework.mixin.api.Stack
 import kotlin.test.Test
 
 class TestMixinEngine {
@@ -43,14 +42,14 @@ class TestMixinEngine {
         @Mixin(Destination::class)
         class Test {
             @InjectCode(
-                at = Select(HEAD)
+                point = Select(HEAD)
             )
             fun methodA() {
 
             }
 
             @InjectCode(
-                at = Select(HEAD)
+                point = Select(HEAD)
             )
             fun overloads(
                 asdf: Captured<String>,
@@ -60,7 +59,7 @@ class TestMixinEngine {
 
             @InjectCode(
                 "overloads(Ljava/lang/String;)V",
-                at = Select(HEAD)
+                point = Select(HEAD)
             )
             fun overloads2() {
 
@@ -68,7 +67,7 @@ class TestMixinEngine {
 
             @InjectCode(
                 "methodA",
-                at = Select(HEAD)
+                point = Select(HEAD)
             )
             fun methodA2() {
 
@@ -76,7 +75,7 @@ class TestMixinEngine {
 
             @InjectCode(
                 "overloads (String)",
-                at = Select(HEAD)
+                point = Select(HEAD)
             )
             fun methodA3() {
 
@@ -105,7 +104,7 @@ class TestMixinEngine {
         @Mixin(Destination::class)
         class Test {
             @InjectCode(
-                at = Select(HEAD)
+                point = Select(HEAD)
             )
             fun overloads() {
 

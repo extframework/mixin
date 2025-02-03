@@ -1,9 +1,12 @@
 package dev.extframework.mixin.test
 
+import dev.extframework.common.util.make
 import org.objectweb.asm.ClassReader
 import org.objectweb.asm.ClassWriter
 import org.objectweb.asm.Type
 import org.objectweb.asm.tree.ClassNode
+import kotlin.io.path.Path
+import kotlin.io.path.writeBytes
 import kotlin.reflect.KClass
 
 private class THIS
@@ -14,16 +17,20 @@ fun classNode(
     val type = Type.getType(cls.java)
     val stream = THIS::class.java.getResourceAsStream("/${type.internalName}.class")
     val node = ClassNode()
-    ClassReader(stream).accept(node, 0)
+    ClassReader(stream).accept(node, ClassReader.EXPAND_FRAMES)
     return node
 }
 
-fun load(node: ClassNode) : Class<*> {
+fun load(node: ClassNode): Class<*> {
     val writer = ClassWriter(ClassWriter.COMPUTE_FRAMES)
     node.accept(writer)
     val bytes = writer.toByteArray()
 
     val nodeName = node.name.replace("/", ".")
+
+    val name = nodeName.substringAfterLast(".")
+
+    Path("class-output/$name.class").apply { make() }.writeBytes(bytes)
 
     val cl = object : ClassLoader() {
         override fun loadClass(name: String): Class<*> {

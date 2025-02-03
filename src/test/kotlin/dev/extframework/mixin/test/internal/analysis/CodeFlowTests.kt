@@ -3,18 +3,41 @@ package dev.extframework.mixin.test.internal.analysis
 import com.mxgraph.layout.hierarchical.mxHierarchicalLayout
 import com.mxgraph.layout.mxIGraphLayout
 import com.mxgraph.util.mxCellRenderer
+import dev.extframework.archives.transform.ByteCodeUtils
+import dev.extframework.archives.transform.ByteCodeUtils.opcodeToString
 import dev.extframework.mixin.internal.analysis.CodeFlowAnalyzer
 import dev.extframework.mixin.internal.analysis.CodeFlowAnalyzer.CFGNode
 import dev.extframework.mixin.internal.analysis.CodeFlowAnalyzer.DominatorNode
 import dev.extframework.mixin.internal.analysis.CodeFlowAnalyzer.intersectAll
+import dev.extframework.mixin.internal.analysis.ObjectValueRef
+import dev.extframework.mixin.internal.analysis.SimulatedFrame
+import dev.extframework.mixin.internal.analysis.analyzeFrames
+import dev.extframework.mixin.test.internal.inject.impl.code.Dest
 import org.jgrapht.Graph
 import org.jgrapht.ext.JGraphXAdapter
 import org.jgrapht.graph.DefaultDirectedGraph
 import org.jgrapht.graph.DefaultEdge
 import org.objectweb.asm.ClassReader
+import org.objectweb.asm.Type
+import org.objectweb.asm.tree.AbstractInsnNode
 import org.objectweb.asm.tree.ClassNode
+import org.objectweb.asm.tree.FieldInsnNode
+import org.objectweb.asm.tree.FrameNode
+import org.objectweb.asm.tree.IincInsnNode
 import org.objectweb.asm.tree.InsnList
 import org.objectweb.asm.tree.InsnNode
+import org.objectweb.asm.tree.IntInsnNode
+import org.objectweb.asm.tree.InvokeDynamicInsnNode
+import org.objectweb.asm.tree.JumpInsnNode
+import org.objectweb.asm.tree.LabelNode
+import org.objectweb.asm.tree.LdcInsnNode
+import org.objectweb.asm.tree.LineNumberNode
+import org.objectweb.asm.tree.LookupSwitchInsnNode
+import org.objectweb.asm.tree.MethodInsnNode
+import org.objectweb.asm.tree.MethodNode
+import org.objectweb.asm.tree.MultiANewArrayInsnNode
+import org.objectweb.asm.tree.TableSwitchInsnNode
+import org.objectweb.asm.tree.TypeInsnNode
 import org.objectweb.asm.tree.VarInsnNode
 import java.awt.Color
 import java.awt.image.BufferedImage
@@ -30,13 +53,7 @@ class CodeFlowTests {
         stream: InputStream,
         method: String,
     ): InsnList {
-        val reader = ClassReader(stream)
-        val node = ClassNode()
-        reader.accept(node, 0)
-
-        return node.methods.find {
-            it.name == method
-        }!!.instructions
+        return methodFor(stream, method).instructions
     }
 
     fun insnFor(
@@ -48,28 +65,37 @@ class CodeFlowTests {
         return insnFor(stream, method)
     }
 
+    fun methodFor(
+        cls: KClass<*>,
+        method: String,
+    ): MethodNode {
+        val stream = CodeFlowTests::class.java.getResourceAsStream("/${cls.java.name.replace('.', '/')}.class")!!
+
+        return methodFor(stream, method)
+    }
+
+    fun methodFor(
+        stream: InputStream,
+        method: String,
+    ): MethodNode {
+        val reader = ClassReader(stream)
+        val node = ClassNode()
+        reader.accept(node, 0)
+
+        return node.methods.find {
+            it.name == method
+        }!!
+    }
+
     @Test
     fun `Test full flow graph`() {
         val code = insnFor(Sample::class, "sampleMethod")
         val graph = CodeFlowAnalyzer.buildFullFlowGraph(
             code,
+            listOf()
         )
 
 
-    }
-
-    // The OB/GYN references go crazy
-    @Test
-    fun `Test small edge contraction`() {
-        val element = InsnNode(5)
-        val contraction = CodeFlowAnalyzer.contract(
-            CodeFlowAnalyzer.CFGNode(listOf(element)),
-            CodeFlowAnalyzer.CFGNode(listOf(element)),
-        )
-
-        check(contraction.instructions.toList() == listOf(element, element))
-        check(contraction.entersBy.isEmpty())
-        check(contraction.exitsBy.isEmpty())
     }
 
     @Test
@@ -195,21 +221,27 @@ class CodeFlowTests {
         val code = insnFor(Sample::class, "sampleMethod")
         val graph = CodeFlowAnalyzer.buildFullFlowGraph(
             code,
+            listOf()
         )
 
         val cfg = CodeFlowAnalyzer.buildCFG(graph)
 
         exportAsPng(cfg, code, Path("src/test/resources/cfg_graph.png"))
+    }
 
-        fun roundUp(
-            node: CFGNode,
-            processed: MutableSet<CFGNode>,
-        ): List<CFGNode> {
-            processed.add(node)
-            return listOf(node) + node.exitsBy
-                .filterNot(processed::contains)
-                .flatMap { roundUp(it, processed) }
-        }
+    @Test
+    fun `Test build another CFG`() {
+        val method = methodFor(Dest::class, "sample")
+        val code = method.instructions
+        val graph = CodeFlowAnalyzer.buildFullFlowGraph(
+            code,
+            method.tryCatchBlocks
+        )
+
+        val cfg = CodeFlowAnalyzer.buildCFG(graph)
+
+        blockedInsn(cfg, code)
+        exportAsPng(cfg, code, Path("src/test/resources/sample2_cfg_graph.png"))
     }
 
     @Test
@@ -220,6 +252,7 @@ class CodeFlowTests {
         )
         val graph = CodeFlowAnalyzer.buildFullFlowGraph(
             code,
+            listOf()
         )
 
         val cfg = CodeFlowAnalyzer.buildCFG(graph)
@@ -302,6 +335,29 @@ class CodeFlowTests {
         check(result == expected)
     }
 
+    private fun textify(list: List<AbstractInsnNode>): List<String> {
+        return list.associateWith {
+            when (it) {
+                is FieldInsnNode -> "${it.owner} ${it.name} ${it.desc}"
+                is IincInsnNode -> "${it.`var`} ${it.incr}"
+                is IntInsnNode -> "${it.operand}"
+                is InvokeDynamicInsnNode -> "${it.name} ${it.desc}"
+                is JumpInsnNode -> "${it.label.label}"
+                is LdcInsnNode -> "${it.cst}"
+                is LineNumberNode -> "${it.line} ${it.start}"
+                is LookupSwitchInsnNode -> "${it.dflt.label} ${it.keys} ${it.labels}"
+                is MethodInsnNode -> "${it.owner} ${it.name} ${it.desc} ${it.itf}"
+                is MultiANewArrayInsnNode -> it.desc
+                is TableSwitchInsnNode -> "${it.min} ${it.max} ${it.dflt.label} ${it.labels}"
+                is TypeInsnNode -> it.desc
+                is VarInsnNode -> "${it.`var`}"
+                is LabelNode -> "LABEL ${it.label}"
+                else -> ""
+            }
+        }.map { "${opcodeToString(it.key.opcode)?.let { s -> "$s " } ?: ""}${it.value}" }
+
+    }
+
     private fun blockedInsn(
         rootCFG: CFGNode,
         insn: InsnList
@@ -317,9 +373,17 @@ class CodeFlowTests {
             return ordered.indexOf(node).toString()
         }
 
-        ordered.forEach { node ->
-            println(toString(node))
-            println(node.instructions.joinToString("\n"))
+        // 204
+        ordered.forEach {
+            println()
+            println("---------------- " + toString(it))
+            println()
+            textify(it.instructions)
+                .zip(it.instructions)
+                .filterNot { it.first.isBlank() }
+                .forEach { (it, node) ->
+                    println("${insn.indexOf(node)} $it")
+                }
         }
     }
 
@@ -373,6 +437,7 @@ class CodeFlowTests {
         val code = insnFor(Sample::class, "sampleMethod")
         val graph = CodeFlowAnalyzer.buildFullFlowGraph(
             code,
+            listOf()
         )
 
         val cfg = CodeFlowAnalyzer.buildCFG(graph)
@@ -381,5 +446,57 @@ class CodeFlowTests {
 
         exportAsPng(cfg, dominator, code, Path("src/test/resources/dominator_graph.png"))
         blockedInsn(cfg, code)
+    }
+
+    @Test
+    fun `Test shortest path`() {
+        val code = insnFor(Sample::class, "sampleMethod")
+        val graph = CodeFlowAnalyzer.buildFullFlowGraph(
+            code,
+            listOf()
+        )
+
+        val cfg = CodeFlowAnalyzer.buildCFG(graph)
+
+        val all = HashSet<CFGNode>()
+        CodeFlowAnalyzer.toList(cfg, all)
+
+        val ordered = all.sortedBy {
+            code.indexOf(it.instructions.first())
+        }
+
+        val end = ordered[4]
+
+        val shortest = CodeFlowAnalyzer.shortestPath(
+            cfg, end
+        )
+
+        val shortestOrdered = shortest.map {
+            ordered.indexOf(it)
+        }
+
+        check(shortestOrdered == listOf(4, 3, 1, 0))
+        println(shortestOrdered)
+    }
+
+    @Test
+    fun `Produces same result as frames`() {
+        val method = methodFor(Dest::class, Dest::sample.name)
+        val frames = method.instructions.filterIsInstance<FrameNode>()
+
+        frames.forEach { f ->
+            val simulated = analyzeFrames(
+                f,
+                method.tryCatchBlocks,
+                SimulatedFrame(
+                    listOf(),
+                    listOf(ObjectValueRef(Type.getType(Dest::class.java)))
+                )
+            )
+
+            val mappedFrame = f.stack.map {
+
+            }
+        }
     }
 }

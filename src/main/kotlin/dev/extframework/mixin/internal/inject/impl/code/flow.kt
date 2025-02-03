@@ -91,21 +91,6 @@ public class InternalMixinStack(
         return internal.iterator()
     }
 
-    //    override fun iterator(): Iterator<Stacked> {
-//        return internal.iterator()
-//    }
-//
-//    override fun <T> pop(): T {
-//       return internal.removeLast().value as T
-//    }
-//
-//    override fun <T: Any> push(value: T) {
-//        internal.add(Stacked(value, JvmType.OBJECT))
-//    }
-//
-//    override fun <T> push(value: T, type: JvmType) {
-//        internal.add(Stacked(value, type))
-//    }
     override val size: Int = internal.size
 
     override fun <T> get(index: Int): T {

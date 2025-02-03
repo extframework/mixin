@@ -5,8 +5,7 @@ package dev.extframework.mixin.api
 public annotation class Select(
     val value: InjectionBoundary = InjectionBoundary.IGNORE,
     val invoke: Invoke = Invoke(
-        Nothing::class,
-        "",
+        method = "",
         defaulted = true
     ),
     val field: Field = Field(
@@ -22,6 +21,5 @@ public annotation class Select(
         Nothing::class,
         defaulted = true
     ),
-    val ordinal: Int = 0,
     val defaulted: Boolean = false,
 )
