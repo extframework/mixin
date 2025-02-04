@@ -1,9 +1,9 @@
 package dev.extframework.mixin.internal.inject.impl.code
 
 import dev.extframework.mixin.api.Captured
-import dev.extframework.mixin.api.TypeSort
 import dev.extframework.mixin.api.MixinFlow
 import dev.extframework.mixin.api.Stack
+import dev.extframework.mixin.api.TypeSort
 
 public class InternalMixinFlow : MixinFlow {
     override fun on(): MixinFlow.Result<*> {
@@ -22,49 +22,7 @@ public class InternalMixinFlow : MixinFlow {
         value: T,
         type: TypeSort
     ): MixinFlow.Result<T> {
-        val transformed = when (type) {
-            TypeSort.INT -> {
-                when (value) {
-                    is Char -> value.code
-                    is Boolean -> if (value) 1 else 0
-                    is Short -> value.toInt()
-                    is Byte -> value.toInt()
-                    is Int -> value
-                    else -> throw Exception(
-                        "Cannot transform value from mixin result to an Int which was the requested type."
-                    )
-                }
-            }
-
-            TypeSort.LONG -> {
-                when (value) {
-                    is Long -> value
-                    else -> throw Exception(
-                        "Cannot transform value from mixin result to an Long which was the requested type."
-                    )
-                }
-            }
-
-            TypeSort.FLOAT -> {
-                when (value) {
-                    is Float -> value
-                    else -> throw Exception(
-                        "Cannot transform value from mixin result to an Float which was the requested type."
-                    )
-                }
-            }
-
-            TypeSort.DOUBLE -> {
-                when (value) {
-                    is Double -> value
-                    else -> throw Exception(
-                        "Cannot transform value from mixin result to an Double which was the requested type."
-                    )
-                }
-            }
-
-            TypeSort.OBJECT -> value
-        }
+        val transformed = transformType<T>(type, value)
 
         return MixinFlow.Result(true, transformed as T, type)
     }
@@ -74,14 +32,59 @@ public class InternalCaptured<T>(
     private var value: T,
     override val type: TypeSort
 ) : Captured<T> {
-
     override fun get(): T {
         return value
     }
 
     override fun set(t: T) {
-        value = t
+        val transformed = transformType(type, t)
+
+        value = transformed as T
     }
+}
+
+private fun <T> transformType(sort: TypeSort, value: T): Any? = when (sort) {
+    TypeSort.INT -> {
+        when (value) {
+            is Char -> value.code
+            is Boolean -> if (value) 1 else 0
+            is Short -> value.toInt()
+            is Byte -> value.toInt()
+            is Int -> value
+            else -> throw Exception(
+                "Cannot transform value '$value' from mixin to an Int which was the requested type."
+            )
+        }
+    }
+
+    TypeSort.LONG -> {
+        when (value) {
+            is Long -> value
+            else -> throw Exception(
+                "Cannot transform value '$value' from mixin to an Long which was the requested type."
+            )
+        }
+    }
+
+    TypeSort.FLOAT -> {
+        when (value) {
+            is Float -> value
+            else -> throw Exception(
+                "Cannot transform value '$value' from mixin to an Float which was the requested type."
+            )
+        }
+    }
+
+    TypeSort.DOUBLE -> {
+        when (value) {
+            is Double -> value
+            else -> throw Exception(
+                "Cannot transform value '$value' from mixin to an Double which was the requested type."
+            )
+        }
+    }
+
+    TypeSort.OBJECT -> value
 }
 
 public class InternalMixinStack(

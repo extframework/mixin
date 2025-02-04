@@ -8,6 +8,8 @@ import dev.extframework.mixin.api.InjectionBoundary.HEAD
 import dev.extframework.mixin.api.InjectionType.AFTER
 import dev.extframework.mixin.test.classNode
 import dev.extframework.mixin.test.load
+import dev.extframework.mixin.test.stripKotlinMetadata
+import java.io.PrintStream
 import kotlin.test.Test
 
 class Dest {
@@ -16,12 +18,14 @@ class Dest {
         var a = thisCall()
         println(a)
         val b = 2L
+        println(b)
         var c = 3.0
         var d: String? = "Initial"
         println(d)
         val arr = intArrayOf(1, 2, 3)
 
         println("<here>")
+        println("B is: $b")
 
         // Arithmetic operations
         a += 5
@@ -189,6 +193,23 @@ class MixinEngineInsnTests {
                 println("Summing first")
                 stack.replaceLast(15)
             }
+
+            @InjectCode(
+                "sample",
+                point = Select(
+                    invoke = Invoke(
+                        PrintStream::class,
+                        method = "println(Ljava/lang/Object;)V"
+                    )
+                ),
+                type = AFTER,
+                locals = [2]
+            )
+            fun captureLocalVariable(
+                captured: Captured<Long>
+            ) {
+                captured.set(12)
+            }
         }
 
         val engine = MixinEngine(
@@ -198,8 +219,53 @@ class MixinEngineInsnTests {
         engine.registerMixin(classNode(Test::class))
 
         val transformed = engine.transform(Dest::class.java.name, classNode(Dest::class))
+        stripKotlinMetadata(transformed)
 
-        val cls = load(transformed)
+        val cls = load( transformed)
+        val obj = cls.getConstructor().newInstance()
+        println(cls.getMethod(Dest::sample.name).invoke(obj))
+    }
+
+    @Test
+    fun `Test instruction remapping with source injection`() {
+        @Mixin(Dest::class)
+        class OnlyInsnTest {
+            @InjectCode(
+                point = Select(
+                    HEAD
+                )
+            )
+            fun sample(
+                flow: MixinFlow
+            ): MixinFlow.Result<*> {
+                println("An injection into the head here?")
+                return flow.on()
+            }
+
+            @InjectCode(
+                "sample",
+                point = Select(
+                    InjectionBoundary.TAIL
+                )
+            )
+            fun sampleTail(
+                flow: MixinFlow
+            ): MixinFlow.Result<*> {
+                println("Here is the tail :)")
+                return flow.on()
+            }
+        }
+
+        val engine = MixinEngine(
+            RedefinitionFlags.ONLY_INSTRUCTIONS,
+        )
+
+        engine.registerMixin(classNode(OnlyInsnTest::class))
+
+        val transformed = engine.transform(Dest::class.java.name, classNode(Dest::class))
+        stripKotlinMetadata(transformed)
+
+        val cls = load( transformed)
         val obj = cls.getConstructor().newInstance()
         println(cls.getMethod(Dest::sample.name).invoke(obj))
     }

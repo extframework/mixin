@@ -12,7 +12,9 @@ import dev.extframework.mixin.internal.analysis.CodeFlowAnalyzer.intersectAll
 import dev.extframework.mixin.internal.analysis.ObjectValueRef
 import dev.extframework.mixin.internal.analysis.SimulatedFrame
 import dev.extframework.mixin.internal.analysis.analyzeFrames
+import dev.extframework.mixin.test.insnFor
 import dev.extframework.mixin.test.internal.inject.impl.code.Dest
+import dev.extframework.mixin.test.methodFor
 import org.jgrapht.Graph
 import org.jgrapht.ext.JGraphXAdapter
 import org.jgrapht.graph.DefaultDirectedGraph
@@ -49,43 +51,6 @@ import kotlin.reflect.KClass
 import kotlin.test.Test
 
 class CodeFlowTests {
-    fun insnFor(
-        stream: InputStream,
-        method: String,
-    ): InsnList {
-        return methodFor(stream, method).instructions
-    }
-
-    fun insnFor(
-        cls: KClass<*>,
-        method: String,
-    ): InsnList {
-        val stream = CodeFlowTests::class.java.getResourceAsStream("/${cls.java.name.replace('.', '/')}.class")!!
-
-        return insnFor(stream, method)
-    }
-
-    fun methodFor(
-        cls: KClass<*>,
-        method: String,
-    ): MethodNode {
-        val stream = CodeFlowTests::class.java.getResourceAsStream("/${cls.java.name.replace('.', '/')}.class")!!
-
-        return methodFor(stream, method)
-    }
-
-    fun methodFor(
-        stream: InputStream,
-        method: String,
-    ): MethodNode {
-        val reader = ClassReader(stream)
-        val node = ClassNode()
-        reader.accept(node, 0)
-
-        return node.methods.find {
-            it.name == method
-        }!!
-    }
 
     @Test
     fun `Test full flow graph`() {
@@ -487,7 +452,6 @@ class CodeFlowTests {
         frames.forEach { f ->
             val simulated = analyzeFrames(
                 f,
-                method.tryCatchBlocks,
                 SimulatedFrame(
                     listOf(),
                     listOf(ObjectValueRef(Type.getType(Dest::class.java)))

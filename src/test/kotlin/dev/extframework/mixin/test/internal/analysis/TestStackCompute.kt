@@ -20,7 +20,6 @@ class TestStackCompute {
         val end = method.instructions.get(4)
         val frames = analyzeFrames(
             end,
-            listOf(),
             SimulatedFrame(
                 listOf(), listOf(
                     ObjectValueRef(
@@ -52,7 +51,6 @@ class TestStackCompute {
         )
         val frames = analyzeFrames(
             end,
-            listOf(),
             SimulatedFrame(
                 listOf(), listOf(
                     ObjectValueRef(

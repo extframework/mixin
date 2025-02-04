@@ -39,8 +39,40 @@ internal fun manualBox(
     insn.add(MethodInsnNode(Opcodes.INVOKESPECIAL, wrapper.internalName, "<init>", constructor))
 }
 
+//internal fun manuelBoxSwapping(
+//    to: TypeSort,
+//    insn: InsnList
+//) {
+//    if (to == TypeSort.OBJECT) {
+//        return
+//    }
+//
+//    val wrapper = when (to) {
+//        TypeSort.INT -> java.lang.Integer::class
+//        TypeSort.LONG -> java.lang.Long::class
+//        TypeSort.FLOAT -> java.lang.Float::class
+//        TypeSort.DOUBLE -> java.lang.Double::class
+//        TypeSort.OBJECT -> nothing()
+//    }
+//
+//    val constructor = when (to) {
+//        TypeSort.INT -> "(I)V"
+//        TypeSort.LONG -> "(J)V"
+//        TypeSort.FLOAT -> "(F)V"
+//        TypeSort.DOUBLE -> "(D)V"
+//        TypeSort.OBJECT -> nothing()
+//    }
+//
+//    insn.add(TypeInsnNode(Opcodes.NEW, wrapper.internalName))
+//    insn.add(InsnNode(Opcodes.DUP))
+//    insn.add(InsnNode(Opcodes.SWAP))
+//    insn.add(VarInsnNode(Opcodes.ILOAD + to.offset, localIndex))
+//    insn.add(MethodInsnNode(Opcodes.INVOKESPECIAL, wrapper.internalName, "<init>", constructor))
+//}
+
+
 // Assumes that the value you want to manual-unbox is on the stack
-internal fun manuelUnbox(
+internal fun manualUnbox(
     ref: JvmValueRef,
     insn: InsnList
 ) {

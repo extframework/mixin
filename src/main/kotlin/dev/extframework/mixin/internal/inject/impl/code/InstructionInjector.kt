@@ -178,7 +178,6 @@ public class InstructionInjector(
                             // The values will get overwritten so we cant put it at the end
                             InjectionType.OVERWRITE -> group.start
                         },
-                        methodNode.tryCatchBlocks ?: listOf(),
                         SimulatedFrame(
                             listOf(),
                             (if (isStatic) listOf() else listOf(
@@ -190,11 +189,12 @@ public class InstructionInjector(
                     val flowInsn = buildMixinFlow(
                         toInject,
                         frame,
+                        methodNode.maxLocals,
+                        node.ref(),
                         isStatic,
                         methodDescriptor.returnType
                             ?.takeUnless { it == Type.VOID_TYPE }
-                            ?.toValueRef(),
-                        node.ref()
+                            ?.toValueRef()
                     )
 
                     BuiltFlow(
@@ -288,14 +288,14 @@ public class InstructionInjector(
     }
 
     internal fun captureLocal(
-        local: Int,
+        originalSlot: Int,
         type: JvmValueRef,
         insn: InsnList,
     ) {
         insn.add(TypeInsnNode(NEW, InternalCaptured::class.internalName))
         insn.add(InsnNode(DUP))
 
-        manualBox(type.sort, local, insn)
+        manualBox(type.sort, originalSlot, insn)
         insn.add(FieldInsnNode(GETSTATIC, TypeSort::class.internalName, type.sort.name, TypeSort::class.descriptor))
 
         insn.add(
@@ -308,11 +308,12 @@ public class InstructionInjector(
     }
 
     internal fun releaseLocal(
-        local: Int,
+        capturedObjSlot: Int,
+        originalSlot: Int,
         type: JvmValueRef,
         insn: InsnList
     ) {
-        insn.add(VarInsnNode(ALOAD, local))
+        insn.add(VarInsnNode(ALOAD, capturedObjSlot))
         insn.add(TypeInsnNode(CHECKCAST, Captured::class.internalName))
         insn.add(
             MethodInsnNode(
@@ -323,8 +324,8 @@ public class InstructionInjector(
                 true
             )
         )
-        manuelUnbox(type, insn)
-        insn.add(VarInsnNode(ISTORE + type.sort.offset, local))
+        manualUnbox(type, insn)
+        insn.add(VarInsnNode(ISTORE + type.sort.offset, originalSlot))
     }
 
     internal fun releaseStack(
@@ -341,7 +342,7 @@ public class InstructionInjector(
                     INVOKEINTERFACE, Stack::class.internalName, "get", "(I)${Any::class.descriptor}", true
                 )
             )
-            manuelUnbox(type, insn)
+            manualUnbox(type, insn)
         }
     }
 
@@ -381,6 +382,12 @@ public class InstructionInjector(
         }
     }
 
+    private fun hasFlowResult(
+        method: Method,
+    ): Boolean {
+        return method.returnType == Type.getType(MixinFlow.Result::class.java)
+    }
+
     private fun callInjection(
         cls: ClassReference,
         method: Method,
@@ -389,7 +396,7 @@ public class InstructionInjector(
         argSlots: List<Int>,
 
         insn: InsnList
-    ): Boolean {
+    ) {
         if (!isStatic) {
             insn.add(VarInsnNode(ALOAD, 0))
         }
@@ -400,62 +407,84 @@ public class InstructionInjector(
 
         insn.add(MethodInsnNode(INVOKEVIRTUAL, cls.internalName, method.name, method.descriptor, false))
 
-        return method.returnType == Type.getType(MixinFlow.Result::class.java)
     }
 
     internal fun buildMixinFlow(
         all: List<InstructionInjectionData>,
+
         frame: SimulatedFrame,
+        maxLocals: Int,
+
+        targetClass: ClassReference,
         isStatic: Boolean,
         returnType: JvmValueRef?,
-        targetClass: ClassReference,
     ): InsnList {
         val instructions = InsnList()
 
+        // Check if any injection needs the stack captured
         val capturedStack = all.any {
             it.mixinMethod.method().argumentTypes.any {
                 it == Type.getType(Stack::class.java)
             }
         }
 
+        // Check which locals need to be captured
         val requiredLocals = all.flatMapTo(HashSet()) {
             it.capturedLocals
         }.sorted()
 
+        // Check that this injection is valid
         checkConditions(isStatic, requiredLocals, all, frame)
 
 
-        var usedLocals = frame.locals.size - 1
-
+        // --------------------------------------------------
+        // Track all the locals that are being used
+        var usedLocals = maxLocals - 1
+        // --------------------------------------------------
 
 
         if (capturedStack) {
-            usedLocals++
-            val slot = usedLocals
+            // Increment slot and capture
+            val slot = ++usedLocals
 
+            instructions.add(LabelNode(Label()))
+
+            // Capture the stack and store the resulting value as a local.
             captureStack(frame.stack, slot, instructions)
             instructions.add(VarInsnNode(ASTORE, slot))
 
             slot
         }
+        // Stack slot, this won't be a valid value if capturedStack is not true
         val stackObjSlot = usedLocals
 
 
-        val capturedLocalSlots = requiredLocals.map {
-            val slot = it
-            captureLocal(slot, frame.locals[slot]!!, instructions)
+        // Similar to before, increment used locals, add label, capture local, and store.
+        val capturedLocalSlots = requiredLocals.map { original ->
+            val slot = ++usedLocals
+
+            instructions.add(LabelNode(Label()))
+
+            captureLocal(original, frame.locals[original]!!, instructions)
 
             instructions.add(VarInsnNode(ASTORE, slot))
 
-            slot
+            slot to original
         }
 
+        // Instantiate the mixin flow object (label, new, and store)
         val mixinFlowObjSlot = ++usedLocals
+        instructions.add(LabelNode(Label()))
         instantiateFlowObj(instructions)
         instructions.add(VarInsnNode(ASTORE, mixinFlowObjSlot))
 
         // Accumulator
+        val accumulatorSlot = ++usedLocals
+
+        instructions.add(LabelNode(Label()))
         instructions.add(TypeInsnNode(NEW, MixinFlow.Result::class.internalName))
+
+        // An accumulator that yields. (Equivalent to new MixinFlow.Result(false, null, null))
         instructions.add(InsnNode(DUP))
         instructions.add(InsnNode(ICONST_0))
         instructions.add(InsnNode(ACONST_NULL))
@@ -467,27 +496,35 @@ public class InstructionInjector(
                 }${TypeSort::class.descriptor})V", false
             )
         )
+        instructions.add(VarInsnNode(ASTORE, accumulatorSlot))
 
-        // At this point the accumulator result (which is just a continue) is in
-        // the top of the stack. Each injection call should not modify the stack
+        // At this point the accumulator result (which is just a 'continue') is stored
+        // in the local variables. Each injection call should not modify the stack
         // unless it adds another result on top of it. In that case we fold them
-        // together.
+        // together and store the new accumulator.
 
         for (data in all) {
             val parameters = determineParameters(
                 data.mixinMethod.method(),
                 mixinFlowObjSlot,
                 stackObjSlot,
-                capturedLocalSlots
+                capturedLocalSlots.map { it.first }
             ) {
                 data.mixinClass
             }
 
+            instructions.add(LabelNode(Label()))
+            // If this mixin has a flow result then we want to load the accumulator
+            // flow and fold, if not then those steps can be ignored.
+            val hasResult = hasFlowResult(data.mixinMethod.method())
+
+            if (hasResult) instructions.add(VarInsnNode(ALOAD, accumulatorSlot))
+
             // Folding if the stack is updated.
-            val hasResult =
-                callInjection(targetClass, data.mixinMethod.method(), isStatic, parameters, instructions)
+            callInjection(targetClass, data.mixinMethod.method(), isStatic, parameters, instructions)
 
             if (hasResult) {
+                // Fold
                 instructions.add(
                     MethodInsnNode(
                         INVOKEVIRTUAL, MixinFlow.Result::class.internalName, "fold", "(${
@@ -495,11 +532,16 @@ public class InstructionInjector(
                         })${MixinFlow.Result::class.descriptor}"
                     )
                 )
+
+                // Store
+                instructions.add(VarInsnNode(ASTORE, accumulatorSlot))
             }
         }
 
         val labelContinue = LabelNode(Label())
 
+        // Load the accumulator, dup it, and see if it yields (wants a return)
+        instructions.add(VarInsnNode(ALOAD, accumulatorSlot))
         instructions.add(InsnNode(DUP))
         instructions.add(
             FieldInsnNode(
@@ -509,6 +551,7 @@ public class InstructionInjector(
                 Type.BOOLEAN_TYPE.descriptor
             )
         )
+        // If it is not a return, jump to our 'flow on' (continue) label.
         instructions.add(JumpInsnNode(IFEQ, labelContinue))
 
         fun getResultValue() {
@@ -522,37 +565,40 @@ public class InstructionInjector(
             )
         }
 
+        // Based on the return type of the method (maybe box) and return.
+        instructions.add(LabelNode(Label()))
         when (returnType?.sort) {
             TypeSort.INT -> {
                 getResultValue()
-                manuelUnbox(returnType, instructions)
+                manualUnbox(returnType, instructions)
                 instructions.add(InsnNode(IRETURN))
             }
 
             TypeSort.LONG -> {
                 getResultValue()
-                manuelUnbox(returnType, instructions)
+                manualUnbox(returnType, instructions)
                 instructions.add(InsnNode(LRETURN))
             }
 
             TypeSort.FLOAT -> {
                 getResultValue()
-                manuelUnbox(returnType, instructions)
+                manualUnbox(returnType, instructions)
                 instructions.add(InsnNode(FRETURN))
             }
 
             TypeSort.DOUBLE -> {
                 getResultValue()
-                manuelUnbox(returnType, instructions)
+                manualUnbox(returnType, instructions)
                 instructions.add(InsnNode(DRETURN))
             }
 
             TypeSort.OBJECT -> {
                 getResultValue()
-                manuelUnbox(returnType, instructions)
+                manualUnbox(returnType, instructions)
                 instructions.add(InsnNode(ARETURN))
             }
 
+            // If the method returns null, empty the stack and return.
             null -> {
                 instructions.add(InsnNode(POP))
                 instructions.add(InsnNode(RETURN))
@@ -563,11 +609,13 @@ public class InstructionInjector(
 
         instructions.add(InsnNode(POP)) // Pop the extra 'result' off the top of the stack
 
-        capturedLocalSlots.forEach {
-            releaseLocal(it, frame.locals[it]!!, instructions)
+        capturedLocalSlots.forEach { (objSlot, original) ->
+            instructions.add(LabelNode(Label()))
+            releaseLocal(objSlot, original, frame.locals[original]!!, instructions)
         }
 
         if (capturedStack) {
+            instructions.add(LabelNode(Label()))
             releaseStack(stackObjSlot, frame.stack, instructions)
         }
 

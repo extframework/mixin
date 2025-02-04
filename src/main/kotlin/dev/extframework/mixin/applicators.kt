@@ -27,3 +27,10 @@ public open class TargetedApplicator(
         return target.hashCode()
     }
 }
+
+public object BroadApplicator : MixinApplicator {
+    override fun applies(
+        ref: ClassReference,
+        node: ClassNode
+    ): Boolean = true
+}
