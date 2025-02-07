@@ -2,10 +2,13 @@ package dev.extframework.mixin.internal.util
 
 import dev.extframework.mixin.api.ClassReference
 import dev.extframework.mixin.api.InjectionType
+import org.objectweb.asm.Label
 import org.objectweb.asm.Type
 import org.objectweb.asm.commons.Method
 import org.objectweb.asm.tree.AnnotationNode
 import org.objectweb.asm.tree.ClassNode
+import org.objectweb.asm.tree.InsnList
+import org.objectweb.asm.tree.LabelNode
 import org.objectweb.asm.tree.MethodNode
 import kotlin.collections.find
 import kotlin.reflect.KClass
@@ -72,3 +75,17 @@ public val KClass<*>.internalName: String
 
 public val KClass<*>.descriptor: String
     get() = "L$internalName;"
+
+public fun InsnList.clone() : InsnList {
+    val list = InsnList()
+
+    val labels = filterIsInstance<LabelNode>()
+        .associate { node -> node to LabelNode(node.label) }
+
+    forEach {
+        var insnNode = it.clone(labels)
+        list.add(insnNode)
+    }
+
+    return list
+}

@@ -98,10 +98,23 @@ public class InstructionInjector(
     override fun inject(
         node: ClassNode,
         all: List<InstructionInjectionData>
-    ): List<MixinInjector.Residual<*>> {
+    ) {
         // Only transforms instructions anyways, residuals are where issues may occur
         // but the method injector will handle that :)
-        return fullyRedefiningInjection(node, all)
+        fullyRedefiningInjection(node, all)
+    }
+
+    override fun residualsFor(
+        data: InstructionInjectionData,
+        applicator: MixinApplicator
+    ): List<MixinInjector.Residual<*>> {
+        return listOf(
+            MixinInjector.Residual(
+                MethodInjector.buildData(data.mixinMethod),
+                applicator,
+                methodInjector
+            )
+        )
     }
 
     // -------------------------------------
@@ -111,7 +124,7 @@ public class InstructionInjector(
     internal fun fullyRedefiningInjection(
         node: ClassNode,
         all: List<InstructionInjectionData>
-    ): List<MixinInjector.Residual<*>> {
+    ) {
         all.groupBy {
             findDestMethod(
                 it.mixinMethod.method(),
@@ -122,6 +135,7 @@ public class InstructionInjector(
             val methodNode = node.methods.first { it.method() == method }
             val methodDescriptor = methodNode.method()
             val isStatic = methodNode.access.and(ACC_STATIC) == ACC_STATIC
+            val locals = LocalTracker(methodNode.maxLocals - 1)
 
             val placedInjections: List<Pair<InstructionInjectionData, InjectionPoint.Group>> = toInject.flatMap {
                 it.point.getPoints(methodNode.instructions)
@@ -189,7 +203,7 @@ public class InstructionInjector(
                     val flowInsn = buildMixinFlow(
                         toInject,
                         frame,
-                        methodNode.maxLocals,
+                        locals,
                         node.ref(),
                         isStatic,
                         methodDescriptor.returnType
@@ -220,14 +234,8 @@ public class InstructionInjector(
                         }
                     }
                 }
-        }
 
-        return all.map {
-            MixinInjector.Residual(
-                MethodInjectionData(it.mixinMethod),
-                TargetedApplicator(ClassReference(node.name)),
-                methodInjector
-            )
+            methodNode.maxLocals = locals.current + 1
         }
     }
 
@@ -405,7 +413,13 @@ public class InstructionInjector(
             insn.add(VarInsnNode(ALOAD, t))
         }
 
-        insn.add(MethodInsnNode(INVOKEVIRTUAL, cls.internalName, method.name, method.descriptor, false))
+        insn.add(
+            MethodInsnNode(
+                if (!isStatic) INVOKEVIRTUAL else INVOKESTATIC,
+
+                cls.internalName, method.name, method.descriptor, false
+            )
+        )
 
     }
 
@@ -413,7 +427,7 @@ public class InstructionInjector(
         all: List<InstructionInjectionData>,
 
         frame: SimulatedFrame,
-        maxLocals: Int,
+        locals: LocalTracker,
 
         targetClass: ClassReference,
         isStatic: Boolean,
@@ -437,15 +451,9 @@ public class InstructionInjector(
         checkConditions(isStatic, requiredLocals, all, frame)
 
 
-        // --------------------------------------------------
-        // Track all the locals that are being used
-        var usedLocals = maxLocals - 1
-        // --------------------------------------------------
-
-
         if (capturedStack) {
             // Increment slot and capture
-            val slot = ++usedLocals
+            val slot = locals.increment()
 
             instructions.add(LabelNode(Label()))
 
@@ -456,12 +464,12 @@ public class InstructionInjector(
             slot
         }
         // Stack slot, this won't be a valid value if capturedStack is not true
-        val stackObjSlot = usedLocals
+        val stackObjSlot = locals.current
 
 
         // Similar to before, increment used locals, add label, capture local, and store.
         val capturedLocalSlots = requiredLocals.map { original ->
-            val slot = ++usedLocals
+            val slot = locals.increment()
 
             instructions.add(LabelNode(Label()))
 
@@ -473,13 +481,13 @@ public class InstructionInjector(
         }
 
         // Instantiate the mixin flow object (label, new, and store)
-        val mixinFlowObjSlot = ++usedLocals
+        val mixinFlowObjSlot = locals.increment()
         instructions.add(LabelNode(Label()))
         instantiateFlowObj(instructions)
         instructions.add(VarInsnNode(ASTORE, mixinFlowObjSlot))
 
         // Accumulator
-        val accumulatorSlot = ++usedLocals
+        val accumulatorSlot = locals.increment()
 
         instructions.add(LabelNode(Label()))
         instructions.add(TypeInsnNode(NEW, MixinFlow.Result::class.internalName))

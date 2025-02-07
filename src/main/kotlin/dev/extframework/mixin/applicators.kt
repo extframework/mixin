@@ -2,14 +2,12 @@ package dev.extframework.mixin
 
 import dev.extframework.mixin.api.ClassReference
 import dev.extframework.mixin.api.MixinApplicator
-import org.objectweb.asm.tree.ClassNode
 
 public open class TargetedApplicator(
     public val target: ClassReference
 ) : MixinApplicator {
     override fun applies(
         ref: ClassReference,
-        node: ClassNode
     ): Boolean {
         return ref == target
     }
@@ -31,6 +29,5 @@ public open class TargetedApplicator(
 public object BroadApplicator : MixinApplicator {
     override fun applies(
         ref: ClassReference,
-        node: ClassNode
     ): Boolean = true
 }

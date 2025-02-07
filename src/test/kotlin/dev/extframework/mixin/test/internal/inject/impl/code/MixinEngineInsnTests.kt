@@ -1,6 +1,5 @@
 package dev.extframework.mixin.test.internal.inject.impl.code
 
-import dev.extframework.archives.transform.ByteCodeUtils
 import dev.extframework.mixin.MixinEngine
 import dev.extframework.mixin.RedefinitionFlags
 import dev.extframework.mixin.api.*
@@ -8,11 +7,26 @@ import dev.extframework.mixin.api.InjectionBoundary.HEAD
 import dev.extframework.mixin.api.InjectionType.AFTER
 import dev.extframework.mixin.test.classNode
 import dev.extframework.mixin.test.load
+import dev.extframework.mixin.test.reload
 import dev.extframework.mixin.test.stripKotlinMetadata
+import net.bytebuddy.agent.ByteBuddyAgent
+import org.objectweb.asm.Opcodes
 import java.io.PrintStream
 import kotlin.test.Test
 
+object StaticDest {
+    @JvmStatic
+    fun staticTest(param1: Int) {
+        println("Something happening" + param1)
+    }
+}
+
 class Dest {
+    fun returnInt(): Int {
+        val a = 10
+        return a
+    }
+
     fun sample(): String {
         // Local variables of different types
         var a = thisCall()
@@ -84,7 +98,7 @@ class Dest {
         }
     }
 
-    private fun thisCall() : Int {
+    private fun thisCall(): Int {
         return 57
     }
 }
@@ -221,7 +235,7 @@ class MixinEngineInsnTests {
         val transformed = engine.transform(Dest::class.java.name, classNode(Dest::class))
         stripKotlinMetadata(transformed)
 
-        val cls = load( transformed)
+        val cls = load(transformed)
         val obj = cls.getConstructor().newInstance()
         println(cls.getMethod(Dest::sample.name).invoke(obj))
     }
@@ -254,6 +268,22 @@ class MixinEngineInsnTests {
                 println("Here is the tail :)")
                 return flow.on()
             }
+
+            @InjectCode(
+                "sample",
+                point = Select(
+                    opcode = Opcode(
+                        ldc = LDC("<here>")
+                    )
+                ),
+                type = AFTER
+            )
+            fun sampleLDC(
+                stack: Stack,
+            ) {
+                stack.replaceLast("Not <here>")
+                println("Here is the tail :)")
+            }
         }
 
         val engine = MixinEngine(
@@ -265,8 +295,99 @@ class MixinEngineInsnTests {
         val transformed = engine.transform(Dest::class.java.name, classNode(Dest::class))
         stripKotlinMetadata(transformed)
 
-        val cls = load( transformed)
+        val cls = load(transformed)
         val obj = cls.getConstructor().newInstance()
         println(cls.getMethod(Dest::sample.name).invoke(obj))
+    }
+
+    @Test
+    fun `Test reloading mixins`() {
+        @Mixin(Dest::class)
+        class FirstMixin {
+            @InjectCode(
+                point = Select(
+                    opcode = Opcode(
+                        Opcodes.ISTORE
+                    )
+                ),
+                type = AFTER,
+                locals = [1]
+            )
+            fun returnInt(
+                captured: Captured<Int>
+            ) {
+                println("A First happened here")
+                captured.set(11)
+            }
+        }
+
+        @Mixin(Dest::class)
+        class SecondMixin {
+            @InjectCode
+            fun returnInt(
+                flow: MixinFlow
+            ): MixinFlow.Result<*> {
+                println("A second mixin happened here")
+                return flow.yield(12)
+            }
+        }
+
+        val agent = ByteBuddyAgent.install()
+
+        val engine = MixinEngine(
+            RedefinitionFlags.ONLY_INSTRUCTIONS,
+        )
+
+        // First mixin
+        engine.registerMixin(classNode(FirstMixin::class))
+
+        val transformed = engine.transform(Dest::class.java.name, classNode(Dest::class))
+        stripKotlinMetadata(transformed)
+
+        val cls = load(transformed)
+        val obj = cls.getConstructor().newInstance()
+        check(cls.getMethod(Dest::returnInt.name).invoke(obj) == 11)
+
+        println("=============================================")
+
+        // Second
+        engine.registerMixin(classNode(SecondMixin::class))
+
+        val transformed2 = engine.transform(Dest::class.java.name, classNode(Dest::class))
+        stripKotlinMetadata(transformed2)
+
+        agent.reload(cls, transformed2)
+
+        check(cls.getMethod(Dest::returnInt.name).invoke(obj) == 12)
+    }
+
+    @Mixin(StaticDest::class)
+    object StaticMixin {
+        @InjectCode(
+            locals = [0]
+        )
+        @JvmStatic
+        fun staticTest(
+            captured: Captured<Int>
+        ) {
+            println("A First happened here: " + captured.get())
+        }
+
+    }
+
+    @Test
+    fun `Test static mixins`() {
+        val engine = MixinEngine(
+            RedefinitionFlags.ONLY_INSTRUCTIONS,
+        )
+
+        // First mixin
+        engine.registerMixin(classNode(StaticMixin::class))
+
+        val transformed = engine.transform(StaticDest::class.java.name, classNode(StaticDest::class))
+        stripKotlinMetadata(transformed)
+
+        val cls = load(transformed)
+        cls.getMethod(StaticDest::staticTest.name, Int::class.java).invoke(null, 10)
     }
 }

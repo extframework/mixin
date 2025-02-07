@@ -7,6 +7,7 @@ import dev.extframework.mixin.RedefinitionFlags
 import dev.extframework.mixin.api.InjectMethod
 import dev.extframework.mixin.api.Mixin
 import dev.extframework.mixin.internal.analysis.toValueRef
+import dev.extframework.mixin.internal.inject.impl.method.MethodInjectionData
 import dev.extframework.mixin.internal.inject.impl.method.MethodInjector
 import dev.extframework.mixin.test.classNode
 import dev.extframework.mixin.test.load
@@ -44,7 +45,9 @@ class TestMethodInjection {
                 methodFor(MethodDest::class, "methodOne"),
                 methodFor(MethodDest::class, "methodTwo"),
                 methodFor(MethodDest::class, "methodThree"),
-            )
+            ).mapIndexed() { i, it ->
+                MethodInjectionData(it, i)
+            }
         )
 
         ByteCodeUtils.textifyInsn(method.instructions).forEach { t ->
@@ -91,7 +94,7 @@ class TestMethodInjection {
         class MixinClass {
             @InjectMethod
             fun methodTwo(arg1: Int) {
-                println("Doing this instead? " + arg1)
+                println("Doing this instead? $arg1")
             }
         }
 

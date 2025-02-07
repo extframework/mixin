@@ -2,7 +2,8 @@ package dev.extframework.mixin.internal.inject.impl.method
 
 import dev.extframework.mixin.BroadApplicator
 import dev.extframework.mixin.RedefinitionFlags
-import dev.extframework.mixin.api.Opcodes
+import dev.extframework.mixin.api.ClassReference
+import dev.extframework.mixin.api.MixinApplicator
 import dev.extframework.mixin.api.TypeSort
 import dev.extframework.mixin.internal.analysis.JvmValueRef
 import dev.extframework.mixin.internal.analysis.toValueRef
@@ -11,6 +12,7 @@ import dev.extframework.mixin.internal.inject.InjectionData
 import dev.extframework.mixin.internal.inject.MixinInjector
 import dev.extframework.mixin.internal.inject.impl.abstact.AbstractInjection
 import dev.extframework.mixin.internal.inject.impl.abstact.AbstractMixinInjector
+import dev.extframework.mixin.internal.util.clone
 import dev.extframework.mixin.internal.util.internalName
 import dev.extframework.mixin.internal.util.manualBox
 import dev.extframework.mixin.internal.util.manualUnbox
@@ -19,36 +21,40 @@ import org.objectweb.asm.Label
 import org.objectweb.asm.Opcodes.*
 import org.objectweb.asm.Type
 import org.objectweb.asm.commons.Method
-import org.objectweb.asm.tree.AnnotationNode
-import org.objectweb.asm.tree.ClassNode
-import org.objectweb.asm.tree.InsnList
-import org.objectweb.asm.tree.InsnNode
-import org.objectweb.asm.tree.IntInsnNode
-import org.objectweb.asm.tree.LabelNode
-import org.objectweb.asm.tree.LdcInsnNode
-import org.objectweb.asm.tree.LookupSwitchInsnNode
-import org.objectweb.asm.tree.MethodInsnNode
-import org.objectweb.asm.tree.MethodNode
-import org.objectweb.asm.tree.TypeInsnNode
-import org.objectweb.asm.tree.VarInsnNode
+import org.objectweb.asm.tree.*
+
+private const val METHOD_NAME = "uber method"
+private const val STATIC_METHOD_NAME = "static uber method"
 
 public class MethodInjector(
     public val redefinitionFlags: RedefinitionFlags,
 ) : MixinInjector<MethodInjectionData> {
+
+    public companion object {
+        private var idCounter: Int = 0
+
+        public fun buildData(
+            method: MethodNode
+        ) : MethodInjectionData {
+            return MethodInjectionData(
+                method,
+                idCounter++,
+            )
+        }
+    }
+
     override fun parse(
         target: AnnotationTarget,
         annotation: AnnotationNode
     ): MethodInjectionData {
-        return MethodInjectionData(
-            target.methodNode
-        )
+        return buildData(target.methodNode)
     }
 
     override fun inject(
         node: ClassNode,
         all: List<MethodInjectionData>
-    ): List<MixinInjector.Residual<*>> {
-        return when (redefinitionFlags) {
+    ) {
+        when (redefinitionFlags) {
             RedefinitionFlags.FULL, RedefinitionFlags.NONE -> {
                 fullyRedefine(node, all)
             }
@@ -57,64 +63,70 @@ public class MethodInjector(
         }
     }
 
+    override fun residualsFor(
+        data: MethodInjectionData,
+        applicator: MixinApplicator
+    ): List<MixinInjector.Residual<*>> {
+        return when (redefinitionFlags) {
+            RedefinitionFlags.FULL, RedefinitionFlags.NONE -> listOf()
+
+            RedefinitionFlags.ONLY_INSTRUCTIONS -> {
+                val isStatic = data.method.access and ACC_STATIC != 0
+
+                listOf(
+                    MixinInjector.Residual(
+                        buildRemappingInjector(
+                            applicator,
+                            data.method.method(),
+                            data.uniqueId,
+                            Method(
+                                if (isStatic) STATIC_METHOD_NAME else METHOD_NAME,
+                                "(I[Ljava/lang/Object;)Ljava/lang/Object;"
+                            )
+                        ),
+                        BroadApplicator,
+                        AbstractMixinInjector,
+                    )
+                )
+            }
+        }
+    }
+
     private fun fullyRedefine(
         node: ClassNode,
         all: List<MethodInjectionData>
-    ): List<MixinInjector.Residual<*>> {
+    ) {
         all.forEach {
+            // This is safe, because full reloads should only occur once.
+            // If we ever need to do a second 'full' reload, this value should
+            // be cloned.
             node.methods.add(it.method)
         }
-
-        return listOf()
     }
 
     private fun instructionRedefine(
         node: ClassNode,
         all: List<MethodInjectionData>
-    ): List<MixinInjector.Residual<*>> {
-        val all = all.map { it.method }
-
+    ) {
         val (static, nonStatic) = all.partition {
-            it.access and ACC_STATIC != 0
+            it.method.access and ACC_STATIC != 0
         }
 
         // Using spaces because we are special
-        val methodName = "uber method"
-        val staticMethodName = "static uber method"
+        val methodName = METHOD_NAME
+        val staticMethodName = STATIC_METHOD_NAME
 
         val method = buildUberMethod(methodName, false, nonStatic)
         val staticMethod = buildUberMethod(staticMethodName, true, static)
 
         node.methods.add(method)
         node.methods.add(staticMethod)
-
-        return (static.mapIndexed { i, it ->
-            buildRemappingInjector(
-                node.name,
-                it.method(),
-                i,
-                staticMethod.method()
-            )
-        } + nonStatic.mapIndexed { i, it ->
-            buildRemappingInjector(
-                node.name,
-                it.method(),
-                i,
-                method.method()
-            )
-        }).map {
-            MixinInjector.Residual(
-                it,
-                BroadApplicator,
-                AbstractMixinInjector,
-            )
-        }
     }
 
     internal fun buildUberMethod(
         name: String,
         isStatic: Boolean,
-        all: List<MethodNode>
+        all: List<MethodInjectionData>
     ): MethodNode {
         val node = MethodNode(
             ACC_PUBLIC or if (isStatic) ACC_STATIC else 0,
@@ -127,13 +139,13 @@ public class MethodInjector(
         val insn = InsnList()
 
         val labels: List<Pair<LabelNode, MethodNode>> = all.map {
-            LabelNode(Label()) to it
+            LabelNode(Label()) to it.method
         }
         val defaultLabel = LabelNode(Label())
 
         val switch = LookupSwitchInsnNode(
             defaultLabel,
-            all.indices.toList().toIntArray(),
+            all.map { it.uniqueId }.toIntArray(),
             labels.map { it.first }.toTypedArray(),
         )
         insn.add(VarInsnNode(ILOAD, if (isStatic) 0 else 1))
@@ -148,6 +160,9 @@ public class MethodInjector(
         labels.forEach { (label, node) ->
             insn.add(label)
             var method = node.method()
+
+            val thisInsn = node.instructions.clone()
+
             loadParameters(
                 insn,
                 if (isStatic) 1 else 2,
@@ -158,13 +173,13 @@ public class MethodInjector(
             incrementLocalsAfter(
                 if (isStatic) -1 else 0,
                 2,
-                node.instructions
+                thisInsn
             )
             transformReturns(
-                node.instructions,
+                thisInsn,
                 node.maxLocals,
             )
-            insn.add(node.instructions)
+            insn.add(thisInsn)
         }
 
         node.instructions = insn
@@ -231,7 +246,7 @@ public class MethodInjector(
     }
 
     private fun buildRemappingInjector(
-        owner: String,
+        applicator: MixinApplicator,
         original: Method,
         ordinal: Int,
         remapped: Method,
@@ -245,7 +260,7 @@ public class MethodInjector(
                         .asSequence()
                         .filterIsInstance<MethodInsnNode>()
                         .filter {
-                            it.owner == owner && Method(it.name, it.desc) == original
+                            applicator.applies(ClassReference(it.owner)) && Method(it.name, it.desc) == original
                         }
                         .forEach { call ->
                             val injection = buildMethodCall(method.maxLocals, ordinal, original)
@@ -310,5 +325,7 @@ public class MethodInjector(
 }
 
 public data class MethodInjectionData(
-    val method: MethodNode
+    // Note that this method should NEVER be mutated if you want reloading to be safe.
+    val method: MethodNode,
+    val uniqueId: Int,
 ) : InjectionData

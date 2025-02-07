@@ -20,6 +20,8 @@ dependencies {
     testImplementation("org.jgrapht:jgrapht-ext:1.5.2")
 
     testImplementation("dev.extframework:archives:1.5-SNAPSHOT")
+    // https://mvnrepository.com/artifact/net.bytebuddy/byte-buddy-agent
+    testImplementation("net.bytebuddy:byte-buddy-agent:1.17.0")
 }
 
 tasks.test {

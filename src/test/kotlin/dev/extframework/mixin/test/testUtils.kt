@@ -9,6 +9,8 @@ import org.objectweb.asm.tree.ClassNode
 import org.objectweb.asm.tree.InsnList
 import org.objectweb.asm.tree.MethodNode
 import java.io.InputStream
+import java.lang.instrument.ClassDefinition
+import java.lang.instrument.Instrumentation
 import kotlin.io.path.Path
 import kotlin.io.path.writeBytes
 import kotlin.reflect.KClass
@@ -23,6 +25,30 @@ fun classNode(
     val node = ClassNode()
     ClassReader(stream).accept(node, ClassReader.EXPAND_FRAMES)
     return node
+}
+
+fun Instrumentation.reload(
+    cls: Class<*>,
+    node: ClassNode
+) {
+    check(isRedefineClassesSupported)
+
+    val writer = ClassWriter(ClassWriter.COMPUTE_FRAMES)
+    node.accept(writer)
+    val bytes = writer.toByteArray()
+
+    val nodeName = node.name.replace("/", ".")
+
+    val name = nodeName.substringAfterLast(".").replace("$", "_")
+
+    Path("class-output/redefined/$name.class").apply { make() }.writeBytes(bytes)
+
+    redefineClasses(
+        ClassDefinition(
+            cls,
+            bytes
+        )
+    )
 }
 
 fun load(node: ClassNode): Class<*> {

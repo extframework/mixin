@@ -1,5 +1,6 @@
 package dev.extframework.mixin.internal.inject.impl.abstact
 
+import dev.extframework.mixin.api.MixinApplicator
 import dev.extframework.mixin.internal.annotation.AnnotationTarget
 import dev.extframework.mixin.internal.inject.InjectionData
 import dev.extframework.mixin.internal.inject.MixinInjector
@@ -18,11 +19,16 @@ public object AbstractMixinInjector : MixinInjector<AbstractInjection> {
     override fun inject(
         node: ClassNode,
         all: List<AbstractInjection>
-    ): List<MixinInjector.Residual<*>> {
+    ) {
         all.forEach {
             it.inject(node)
         }
+    }
 
+    override fun residualsFor(
+        data: AbstractInjection,
+        applicator: MixinApplicator
+    ): List<MixinInjector.Residual<*>> {
         return listOf()
     }
 }
