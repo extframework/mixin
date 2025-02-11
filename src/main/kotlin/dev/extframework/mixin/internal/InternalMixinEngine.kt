@@ -9,6 +9,7 @@ import dev.extframework.mixin.internal.annotation.AnnotationProcessor
 import dev.extframework.mixin.internal.annotation.impl.AnnotationProcessorImpl
 import dev.extframework.mixin.internal.inject.InjectionData
 import dev.extframework.mixin.internal.inject.MixinInjector
+import dev.extframework.mixin.internal.inject.MixinInjector.InjectionHelper
 import dev.extframework.mixin.internal.util.find
 import dev.extframework.mixin.internal.util.value
 import org.objectweb.asm.Type
@@ -26,6 +27,12 @@ internal class InternalMixinEngine(
             MixinApplicator,
             MutableList<QualifiedInjection<*>>
             >()
+    internal val allInjectionData = HashMap<MixinInjector<*>, MutableSet<InjectionData>>()
+
+//    internal val residuals = HashMap<
+//            MixinApplicator,
+//            MutableList<QualifiedInjection<*>>
+//            >()
 //    internal val residuals = HashMap<
 //            Pair<MixinInjector<*>, ClassReference>,
 //            Map<MixinApplicator, List<QualifiedInjection<*>>>
@@ -77,32 +84,45 @@ internal class InternalMixinEngine(
             }
         }
 
-        fun resolveInjections(
-            residual: MixinInjector.Residual<*>
-        ) {
-            val (data, applicator, injector) = residual
-            injector as MixinInjector<InjectionData>
+//        fun resolveInjections(
+//            residual: MixinInjector.Residual<*>
+//        ) {
+//            val (data, applicator, injector) = residual
+//            injector as MixinInjector<InjectionData>
+//
+//            injections
+//                .getOrPut(applicator) { mutableListOf() }
+//                .add(
+//                    QualifiedInjection(
+//                        data,
+//                        injector
+//                    )
+//                )
+//
+//            injector.residualsFor(
+//                data,
+//                definedApplicator,
+//            ).forEach(::resolveInjections)
+//        }
 
+        allData.forEach { data ->
             injections
-                .getOrPut(applicator) { mutableListOf() }
+                .getOrPut(definedApplicator) { mutableListOf() }
                 .add(
-                    QualifiedInjection(
-                        data,
-                        injector
-                    )
+                    data
                 )
-
-            injector.residualsFor(
-                data,
-                definedApplicator,
-            ).forEach(::resolveInjections)
+            allInjectionData
+                .getOrPut(data.injector) { HashSet() }
+                .add(
+                    data.injection
+                )
         }
 
-        allData.mapTo(ArrayList()) {
-            MixinInjector.Residual(
-                it.injection, definedApplicator, it.injector,
-            )
-        }.forEach(::resolveInjections)
+//        allData.mapTo(ArrayList()) {
+//            MixinInjector.Residual(
+//                it.injection, definedApplicator, it.injector,
+//            )
+//        }.forEach(::resolveInjections)
     }
 
     override fun transform(
@@ -133,7 +153,7 @@ internal class InternalMixinEngine(
         // We want to continue as long as there are more changes to apply to this
         // class node. This happens when an injection triggers more injections on
         // this class.
-        var changes = injections.isNotEmpty()
+//        var changes = injections.isNotEmpty()
 
 //        while (changes) {
         // Iterate each injection grouped by injector.
@@ -143,7 +163,7 @@ internal class InternalMixinEngine(
             .forEach { (injector, allData) ->
                 (injector as MixinInjector<InjectionData>).inject(
                     node,
-                    allData
+                    createHelper(allData, injector),
                 )
 
 //                    // Decide if another pass is required (ie do any of the produced residuals
@@ -155,6 +175,30 @@ internal class InternalMixinEngine(
 //        }
 
         return node
+    }
+
+    private fun createHelper(
+        applicable: List<InjectionData>,
+        injector: MixinInjector<InjectionData>
+    ): InjectionHelper<InjectionData> {
+        return object : InjectionHelper<InjectionData> {
+            override val allData: Set<InjectionData> = allInjectionData[injector].orEmpty() + applicable
+
+            override fun applicable(): List<InjectionData> {
+                return applicable
+            }
+
+            override fun <T2 : InjectionData> inject(
+                node: ClassNode,
+                injector: MixinInjector<T2>,
+                data: List<T2>
+            ) {
+                injector.inject(
+                    node,
+                    createHelper(data, injector as MixinInjector<InjectionData>) as InjectionHelper<T2>
+                )
+            }
+        }
     }
 
     private fun instantiateApplicator(

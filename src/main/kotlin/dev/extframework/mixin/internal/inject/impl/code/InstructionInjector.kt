@@ -2,7 +2,6 @@ package dev.extframework.mixin.internal.inject.impl.code
 
 import dev.extframework.mixin.InvalidMixinException
 import dev.extframework.mixin.MixinExceptionCause
-import dev.extframework.mixin.TargetedApplicator
 import dev.extframework.mixin.api.*
 import dev.extframework.mixin.internal.analysis.JvmValueRef
 import dev.extframework.mixin.internal.analysis.ObjectValueRef
@@ -13,7 +12,7 @@ import dev.extframework.mixin.internal.annotation.AnnotationTarget
 import dev.extframework.mixin.internal.inject.ConflictingMixinInjections
 import dev.extframework.mixin.internal.inject.InjectionData
 import dev.extframework.mixin.internal.inject.MixinInjector
-import dev.extframework.mixin.internal.inject.impl.method.MethodInjectionData
+import dev.extframework.mixin.internal.inject.MixinInjector.InjectionHelper
 import dev.extframework.mixin.internal.inject.impl.method.MethodInjector
 import dev.extframework.mixin.internal.util.*
 import org.objectweb.asm.Label
@@ -97,25 +96,33 @@ public class InstructionInjector(
     // ------------------------------------
     override fun inject(
         node: ClassNode,
-        all: List<InstructionInjectionData>
+        helper: InjectionHelper<InstructionInjectionData>,
     ) {
         // Only transforms instructions anyways, residuals are where issues may occur
         // but the method injector will handle that :)
-        fullyRedefiningInjection(node, all)
-    }
+        fullyRedefiningInjection(node, helper.applicable())
 
-    override fun residualsFor(
-        data: InstructionInjectionData,
-        applicator: MixinApplicator
-    ): List<MixinInjector.Residual<*>> {
-        return listOf(
-            MixinInjector.Residual(
-                MethodInjector.buildData(data.mixinMethod),
-                applicator,
-                methodInjector
-            )
+        helper.inject(
+            node,
+            methodInjector,
+            helper.applicable().map {
+                MethodInjector.buildData(it.mixinMethod)
+            }
         )
     }
+
+//    override fun residualsFor(
+//        data: InstructionInjectionData,
+//        applicator: MixinApplicator
+//    ): List<MixinInjector.Residual<*>> {
+//        return listOf(
+//            MixinInjector.Residual(
+//                MethodInjector.buildData(data.mixinMethod),
+//                applicator,
+//                methodInjector
+//            )
+//        )
+//    }
 
     // -------------------------------------
     // +++++++++++++ Internal ++++++++++++++

@@ -1,22 +1,14 @@
 package dev.extframework.mixin.internal.inject.impl.method
 
-import dev.extframework.mixin.BroadApplicator
 import dev.extframework.mixin.RedefinitionFlags
-import dev.extframework.mixin.api.ClassReference
-import dev.extframework.mixin.api.MixinApplicator
 import dev.extframework.mixin.api.TypeSort
 import dev.extframework.mixin.internal.analysis.JvmValueRef
 import dev.extframework.mixin.internal.analysis.toValueRef
 import dev.extframework.mixin.internal.annotation.AnnotationTarget
 import dev.extframework.mixin.internal.inject.InjectionData
 import dev.extframework.mixin.internal.inject.MixinInjector
-import dev.extframework.mixin.internal.inject.impl.abstact.AbstractInjection
-import dev.extframework.mixin.internal.inject.impl.abstact.AbstractMixinInjector
-import dev.extframework.mixin.internal.util.clone
-import dev.extframework.mixin.internal.util.internalName
-import dev.extframework.mixin.internal.util.manualBox
-import dev.extframework.mixin.internal.util.manualUnbox
-import dev.extframework.mixin.internal.util.method
+import dev.extframework.mixin.internal.inject.MixinInjector.InjectionHelper
+import dev.extframework.mixin.internal.util.*
 import org.objectweb.asm.Label
 import org.objectweb.asm.Opcodes.*
 import org.objectweb.asm.Type
@@ -35,11 +27,13 @@ public class MethodInjector(
 
         public fun buildData(
             method: MethodNode
-        ) : MethodInjectionData {
-            return MethodInjectionData(
-                method,
-                idCounter++,
-            )
+        ): MethodInjectionData {
+            synchronized(this) {
+                return MethodInjectionData(
+                    method,
+                    idCounter++,
+                )
+            }
         }
     }
 
@@ -52,45 +46,68 @@ public class MethodInjector(
 
     override fun inject(
         node: ClassNode,
-        all: List<MethodInjectionData>
+        helper: InjectionHelper<MethodInjectionData>,
+//        all: List<MethodInjectionData>
     ) {
         when (redefinitionFlags) {
             RedefinitionFlags.FULL, RedefinitionFlags.NONE -> {
-                fullyRedefine(node, all)
+                fullyRedefine(node, helper.applicable())
             }
 
-            RedefinitionFlags.ONLY_INSTRUCTIONS -> instructionRedefine(node, all)
-        }
-    }
-
-    override fun residualsFor(
-        data: MethodInjectionData,
-        applicator: MixinApplicator
-    ): List<MixinInjector.Residual<*>> {
-        return when (redefinitionFlags) {
-            RedefinitionFlags.FULL, RedefinitionFlags.NONE -> listOf()
-
             RedefinitionFlags.ONLY_INSTRUCTIONS -> {
-                val isStatic = data.method.access and ACC_STATIC != 0
+                instructionRedefine(node, helper.applicable())
 
-                listOf(
-                    MixinInjector.Residual(
-                        buildRemappingInjector(
-                            applicator,
-                            data.method.method(),
-                            data.uniqueId,
-                            Method(
-                                if (isStatic) STATIC_METHOD_NAME else METHOD_NAME,
-                                "(I[Ljava/lang/Object;)Ljava/lang/Object;"
-                            )
-                        ),
-                        BroadApplicator,
-                        AbstractMixinInjector,
-                    )
+                val (static, notStatic) = helper.allData.partition {it.method.access and ACC_STATIC != 0}
+
+                remap(
+                    static,
+                    Method(
+                        STATIC_METHOD_NAME,
+                        "(I[Ljava/lang/Object;)Ljava/lang/Object;"
+                    ),
+                    node
+                )
+
+                remap(
+                    notStatic,
+                    Method(
+                        METHOD_NAME,
+                        "(I[Ljava/lang/Object;)Ljava/lang/Object;"
+                    ),
+                    node
                 )
             }
         }
     }
+
+//    override fun residualsFor(
+//        data: MethodInjectionData,
+//        applicator: MixinApplicator
+//    ): List<MixinInjector.Residual<*>> {
+//        return when (redefinitionFlags) {
+//            RedefinitionFlags.FULL, RedefinitionFlags.NONE -> listOf()
+//
+//            RedefinitionFlags.ONLY_INSTRUCTIONS -> {
+//                val isStatic = data.method.access and ACC_STATIC != 0
+//
+//                listOf(
+//                    MixinInjector.Residual(
+//                        buildRemappingInjector(
+//                            applicator,
+//                            data.method.method(),
+//                            data.uniqueId,
+//                            Method(
+//                                if (isStatic) STATIC_METHOD_NAME else METHOD_NAME,
+//                                "(I[Ljava/lang/Object;)Ljava/lang/Object;"
+//                            )
+//                        ),
+//                        BroadApplicator,
+//                        AbstractMixinInjector,
+//                    )
+//                )
+//            }
+//        }
+//    }
 
     private fun fullyRedefine(
         node: ClassNode,
@@ -245,39 +262,46 @@ public class MethodInjector(
         }
     }
 
-    private fun buildRemappingInjector(
-        applicator: MixinApplicator,
-        original: Method,
-        ordinal: Int,
+    private fun remap(
+        data: List<MethodInjectionData>,
+
+//        cls: MixinApplicator,
+//        original: Method,
+//        ordinal: Int,
         remapped: Method,
-    ): AbstractInjection = object : AbstractInjection {
-        override fun inject(node: ClassNode) {
-            node.methods
-                .forEach { method ->
-                    val instructions = method.instructions
 
-                    instructions
-                        .asSequence()
-                        .filterIsInstance<MethodInsnNode>()
-                        .filter {
-                            applicator.applies(ClassReference(it.owner)) && Method(it.name, it.desc) == original
-                        }
-                        .forEach { call ->
-                            val injection = buildMethodCall(method.maxLocals, ordinal, original)
-                            instructions.insertBefore(call, injection)
+        node: ClassNode,
+    ) {
+        val methodIds = data.associateBy { it.method.method() }
 
-                            val unwrappingInjection = buildMethodUnwrap(
-                                original.returnType.takeUnless { it == Type.VOID_TYPE }?.toValueRef()
-                            )
-                            instructions.insert(call, unwrappingInjection)
+        node.methods
+            .forEach { method ->
+                val instructions = method.instructions
+
+                instructions
+                    .asSequence()
+                    .filterIsInstance<MethodInsnNode>()
+                    .filter { call ->
+                        node.name == call.owner && methodIds.contains(Method(call.name, call.desc))
+                    }
+                    .forEach { call ->
+                        var methodRef = Method(call.name, call.desc)
+                        val data = methodIds[methodRef]!!
+
+                        val injection = buildMethodCall(method.maxLocals, data.uniqueId, methodRef)
+                        instructions.insertBefore(call, injection)
+
+                        val unwrappingInjection = buildMethodUnwrap(
+                            methodRef.returnType.takeUnless { it == Type.VOID_TYPE }?.toValueRef()
+                        )
+                        instructions.insert(call, unwrappingInjection)
 
 
-                            call.name = remapped.name
-                            call.desc = remapped.descriptor
-                        }
-                }
+                        call.name = remapped.name
+                        call.desc = remapped.descriptor
+                    }
+            }
 
-        }
     }
 
     internal fun buildMethodCall(
