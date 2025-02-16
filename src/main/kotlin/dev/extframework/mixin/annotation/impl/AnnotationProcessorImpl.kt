@@ -1,9 +1,7 @@
-package dev.extframework.mixin.internal.annotation.impl
+package dev.extframework.mixin.annotation.impl
 
-import dev.extframework.mixin.internal.annotation.instantiateAnnotation
-import dev.extframework.mixin.internal.annotation.AnnotationProcessor
-import dev.extframework.mixin.internal.annotation.AnnotationTarget
-import org.objectweb.asm.Type
+import dev.extframework.mixin.annotation.AnnotationProcessor
+import dev.extframework.mixin.annotation.AnnotationTarget
 import org.objectweb.asm.tree.AnnotationNode
 import org.objectweb.asm.tree.ClassNode
 

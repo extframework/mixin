@@ -3,7 +3,10 @@ package dev.extframework.mixin.internal.util
 import dev.extframework.mixin.api.TypeSort
 import dev.extframework.mixin.internal.analysis.JvmValueRef
 import dev.extframework.mixin.internal.analysis.ObjectValueRef
+import dev.extframework.mixin.internal.analysis.SortValueRef
+import jdk.nashorn.internal.runtime.linker.Bootstrap
 import org.objectweb.asm.Opcodes
+import org.objectweb.asm.Type
 import org.objectweb.asm.tree.*
 
 // Assumes that the value you want to manual-box is in the local variables.
@@ -69,8 +72,8 @@ internal fun manualUnbox(
     val primitiveValueDescriptor = when (sort) {
         TypeSort.INT -> "()I"
         TypeSort.LONG -> "()J"
-        TypeSort.FLOAT -> "(F)F"
-        TypeSort.DOUBLE -> "(D)D"
+        TypeSort.FLOAT -> "()F"
+        TypeSort.DOUBLE -> "()D"
         TypeSort.OBJECT -> nothing()
     }
 
@@ -79,3 +82,21 @@ internal fun manualUnbox(
 }
 
 private fun nothing() : Nothing = throw Exception()
+
+public fun JvmValueRef.boxableTo(other: JvmValueRef): Boolean {
+    if (this == other) return true
+
+    fun boxes(first: JvmValueRef, second: JvmValueRef): Boolean {
+        if (first !is SortValueRef || second !is ObjectValueRef) return false
+
+        return return when(first.sort) {
+            TypeSort.INT -> second.objectType == Type.getType(Integer::class.java)
+            TypeSort.LONG -> second.objectType == Type.getType(java.lang.Long::class.java)
+            TypeSort.FLOAT -> second.objectType == Type.getType(java.lang.Float::class.java)
+            TypeSort.DOUBLE -> second.objectType == Type.getType(java.lang.Double::class.java)
+            TypeSort.OBJECT -> false
+        }
+    }
+
+    return boxes(this, other) || boxes(other, this)
+}

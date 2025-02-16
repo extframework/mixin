@@ -155,7 +155,7 @@ class MixinEngineInsnTests {
                 point = Select(
                     invoke = Invoke(
                         Dest::class,
-                        "thisCall()I"
+                        "thisCall()"
                     )
                 ),
                 type = AFTER
@@ -217,7 +217,7 @@ class MixinEngineInsnTests {
                     )
                 ),
                 type = AFTER,
-                locals = [2]
+                locals = [1]
             )
             fun captureLocalVariable(
                 captured: Captured<Long>

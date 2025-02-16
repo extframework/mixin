@@ -31,9 +31,16 @@ public data class SingleInjectionPoint(
         var select = selector.select(source)
             .map { Group(it, it) }
 
-        return select
+        val take = select
             .subList(ordinal, select.size)
             .take(count)
+
+        // TODO better error message
+        if (take.size != count) {
+            throw CodeInjectionException("Failed to match $count point(s) of selector: '$selector'.")
+        }
+
+        return take
     }
 }
 

@@ -5,8 +5,8 @@ import dev.extframework.mixin.api.ClassReference
 import dev.extframework.mixin.api.ClassReference.Companion.ref
 import dev.extframework.mixin.api.Mixin
 import dev.extframework.mixin.api.MixinApplicator
-import dev.extframework.mixin.internal.annotation.AnnotationProcessor
-import dev.extframework.mixin.internal.annotation.impl.AnnotationProcessorImpl
+import dev.extframework.mixin.annotation.AnnotationProcessor
+import dev.extframework.mixin.annotation.impl.AnnotationProcessorImpl
 import dev.extframework.mixin.internal.inject.InjectionData
 import dev.extframework.mixin.internal.inject.MixinInjector
 import dev.extframework.mixin.internal.inject.MixinInjector.InjectionHelper

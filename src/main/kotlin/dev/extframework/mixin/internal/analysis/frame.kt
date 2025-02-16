@@ -8,6 +8,7 @@ import org.objectweb.asm.commons.AnalyzerAdapter
 import org.objectweb.asm.tree.*
 
 public data class SimulatedFrame(
+    // Items on the top are last
     val stack: List<JvmValueRef>,
     val locals: Map<Int, JvmValueRef>
 ) {
@@ -60,12 +61,12 @@ public fun analyzeFrames(
     )
 
     return SimulatedFrame(
-        adapter.stack.mapNotNull { it.toJvmRef() },
+        adapter.stack?.mapNotNull { it.toJvmRef() } ?: listOf(),
         adapter.locals
-            .withIndex()
-            .map { it.index to it.value.toJvmRef() }
-            .filterNot { it.second == null }
-            .toMap() as Map<Int, JvmValueRef>
+            ?.withIndex()
+            ?.map { it.index to it.value.toJvmRef() }
+            ?.filterNot { it.second == null }
+            ?.toMap() as? Map<Int, JvmValueRef> ?: mapOf()
     )
 //    return computeFrame(
 //        initialFrame,

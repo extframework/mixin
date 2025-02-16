@@ -1,4 +1,4 @@
-package dev.extframework.mixin.internal.annotation
+package dev.extframework.mixin.annotation
 
 import org.objectweb.asm.tree.ClassNode
 import org.objectweb.asm.tree.FieldNode

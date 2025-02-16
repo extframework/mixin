@@ -1,6 +1,6 @@
 package dev.extframework.mixin.internal.inject
 
-import dev.extframework.mixin.internal.annotation.AnnotationTarget
+import dev.extframework.mixin.annotation.AnnotationTarget
 import org.objectweb.asm.tree.AnnotationNode
 import org.objectweb.asm.tree.ClassNode
 

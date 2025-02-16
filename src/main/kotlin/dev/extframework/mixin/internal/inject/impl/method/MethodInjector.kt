@@ -4,7 +4,7 @@ import dev.extframework.mixin.RedefinitionFlags
 import dev.extframework.mixin.api.TypeSort
 import dev.extframework.mixin.internal.analysis.JvmValueRef
 import dev.extframework.mixin.internal.analysis.toValueRef
-import dev.extframework.mixin.internal.annotation.AnnotationTarget
+import dev.extframework.mixin.annotation.AnnotationTarget
 import dev.extframework.mixin.internal.inject.InjectionData
 import dev.extframework.mixin.internal.inject.MixinInjector
 import dev.extframework.mixin.internal.inject.MixinInjector.InjectionHelper

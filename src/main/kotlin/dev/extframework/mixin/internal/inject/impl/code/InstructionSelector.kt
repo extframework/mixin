@@ -57,16 +57,24 @@ public class InvocationSelector(
             .filter { node ->
                 when (node) {
                     is MethodInsnNode -> {
-                        node.owner == owner.internalName && Method(node.name, node.desc) == method
+                        node.owner == owner.internalName &&
+                                node.name == method.name &&
+                                node.desc.substringBefore(")") == method.descriptor.substringBefore(")")
                     }
 
                     is InvokeDynamicInsnNode -> {
-                        node.bsm.owner == owner.internalName && Method(node.name, node.desc) == method
+                        node.bsm.owner == owner.internalName &&
+                                node.name == method.name &&
+                                node.desc.substringBefore(")") == method.descriptor.substringBefore(")")
                     }
 
                     else -> throw Exception("Invalid bytecode?")
                 }
             }
+    }
+
+    override fun toString(): String {
+        return "Invocation @ ${owner.className}:${method}"
     }
 }
 
@@ -78,12 +86,16 @@ public class FieldAccessSelector(
     override fun select(instructions: InsnList): List<AbstractInsnNode> {
         return instructions
             .filter {
-               access.opcodes.contains(it.opcode)
+                access.opcodes.contains(it.opcode)
             }
             .filterIsInstance<FieldInsnNode>()
             .filter { node ->
                 node.owner == owner.internalName && node.name == name
             }
+    }
+
+    override fun toString(): String {
+        return "Field access @ ${owner.className}:${name}"
     }
 }
 

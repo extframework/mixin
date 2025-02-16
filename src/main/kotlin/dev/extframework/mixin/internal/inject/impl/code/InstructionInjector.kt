@@ -8,7 +8,7 @@ import dev.extframework.mixin.internal.analysis.ObjectValueRef
 import dev.extframework.mixin.internal.analysis.SimulatedFrame
 import dev.extframework.mixin.internal.analysis.analyzeFrames
 import dev.extframework.mixin.internal.analysis.toValueRef
-import dev.extframework.mixin.internal.annotation.AnnotationTarget
+import dev.extframework.mixin.annotation.AnnotationTarget
 import dev.extframework.mixin.internal.inject.ConflictingMixinInjections
 import dev.extframework.mixin.internal.inject.InjectionData
 import dev.extframework.mixin.internal.inject.MixinInjector
@@ -19,6 +19,8 @@ import org.objectweb.asm.Label
 import org.objectweb.asm.Opcodes.*
 import org.objectweb.asm.Type
 import org.objectweb.asm.commons.Method
+import org.objectweb.asm.signature.SignatureReader
+import org.objectweb.asm.signature.SignatureVisitor
 import org.objectweb.asm.tree.*
 
 public class InstructionInjector(
@@ -81,10 +83,12 @@ public class InstructionInjector(
 //            )
         }
 
+        // TODO not mutating the mixin node (we already do this, possible do a deep copy?)
+
         return InstructionInjectionData(
             mixinClassRef,
             target.methodNode,
-            annotation.method,
+            inferTargetMethod(target.methodNode, annotation.method),
             annotation.type,
             point,
             annotation.locals
@@ -106,7 +110,9 @@ public class InstructionInjector(
             node,
             methodInjector,
             helper.applicable().map {
-                MethodInjector.buildData(it.mixinMethod)
+                MethodInjector.buildData(
+                    it.mixinMethod
+                )
             }
         )
     }
@@ -133,16 +139,29 @@ public class InstructionInjector(
         all: List<InstructionInjectionData>
     ) {
         all.groupBy {
-            findDestMethod(
-                it.mixinMethod.method(),
-                it.requestedMethod,
-                node,
-            ) { it.mixinClass }
+            findTargetMethod(
+                it.inferredTarget,
+                node.methods.map { it.method() },
+            ) { it.mixinClass to node.ref() }
         }.forEach { (method, toInject) ->
             val methodNode = node.methods.first { it.method() == method }
             val methodDescriptor = methodNode.method()
             val isStatic = methodNode.access.and(ACC_STATIC) == ACC_STATIC
-            val locals = LocalTracker(methodNode.maxLocals - 1)
+
+//            val totalFrame = analyzeFrames(
+//                methodNode.instructions.last,
+//                SimulatedFrame(
+//                    listOf(),
+//                    (if (isStatic) listOf() else listOf(
+//                        ObjectValueRef(Type.getObjectType(node.name))
+//                    )) + methodDescriptor.argumentTypes.map { it.toValueRef() }
+//                )
+//            )
+
+            val locals = LocalTracker(
+//                totalFrame.locals.keys.maxOrNull() ?: 0
+                methodNode.maxLocals
+            )
 
             val placedInjections: List<Pair<InstructionInjectionData, InjectionPoint.Group>> = toInject.flatMap {
                 it.point.getPoints(methodNode.instructions)
@@ -262,11 +281,15 @@ public class InstructionInjector(
 
     internal fun captureStack(
         stack: List<JvmValueRef>,
-        localsCount: Int,
+        localTracker: LocalTracker,
         insn: InsnList,
     ) {
-        for ((i, type) in stack.withIndex()) {
-            insn.add(VarInsnNode(ISTORE + type.sort.offset, localsCount + i))
+        val captured = stack.reversed().map { type ->
+            val varIndex = localTracker.increment(
+                type.sort
+            )
+            insn.add(VarInsnNode(ISTORE + type.sort.offset, varIndex))
+            varIndex to type
         }
 
         // Create the stack type. Adding it to the stack to be used later
@@ -277,15 +300,17 @@ public class InstructionInjector(
         insn.add(IntInsnNode(BIPUSH, stack.size))
         insn.add(TypeInsnNode(ANEWARRAY, Any::class.internalName))
 
-        // Add items to stack to array list
-        for ((i, type) in stack.withIndex()) {
+        // Add items to stack to array
+        for ((i, pair) in captured.withIndex()) {
+            val (slot, type) = pair
+
             // Dup the array object
             insn.add(InsnNode(DUP))
             // The index, we do this so it reverses
-            insn.add(IntInsnNode(BIPUSH, stack.size - i - 1))
+            insn.add(IntInsnNode(BIPUSH, captured.size - i - 1))
 
             // Load and box the type
-            manualBox(type.sort, i + localsCount, insn)
+            manualBox(type.sort, slot, insn)
 
             // Store onto array
             insn.add(InsnNode(AASTORE))
@@ -427,7 +452,6 @@ public class InstructionInjector(
                 cls.internalName, method.name, method.descriptor, false
             )
         )
-
     }
 
     internal fun buildMixinFlow(
@@ -443,44 +467,72 @@ public class InstructionInjector(
         val instructions = InsnList()
 
         // Check if any injection needs the stack captured
-        val capturedStack = all.any {
+        val capturesStack = all.any {
             it.mixinMethod.method().argumentTypes.any {
                 it == Type.getType(Stack::class.java)
             }
         }
 
+        val sortedLocals = frame.locals
+            .entries
+            .sortedBy { it.key }
+
+        fun findLocalSlot(slot: Int): Int {
+            return sortedLocals[
+                slot + if (isStatic) 0 else 1
+            ].key
+        }
+
         // Check which locals need to be captured
         val requiredLocals = all.flatMapTo(HashSet()) {
             it.capturedLocals
-        }.sorted()
+        }.sorted().map(::findLocalSlot)
 
         // Check that this injection is valid
-        checkConditions(isStatic, requiredLocals, all, frame)
+        for (data in all) {
+            checkValidity(
+                data,
+                data.capturedLocals.map(::findLocalSlot),
+                frame
+            )
+        }
 
+        val capturedStack = if (!isStatic) {
+            frame.stack.toMutableList()
+                .apply {
+                    removeFirst()
+                }
+        } else frame.stack
 
-        if (capturedStack) {
+        // Stack slot, this won't be a valid value if capturedStack is not true
+        val stackObjSlot = if (capturesStack) {
             // Increment slot and capture
-            val slot = locals.increment()
+            val slot = locals.increment(
+                TypeSort.OBJECT
+            )
 
             instructions.add(LabelNode(Label()))
 
             // Capture the stack and store the resulting value as a local.
-            captureStack(frame.stack, slot, instructions)
+            captureStack(
+                capturedStack,
+                locals,
+                instructions
+            )
             instructions.add(VarInsnNode(ASTORE, slot))
 
             slot
-        }
-        // Stack slot, this won't be a valid value if capturedStack is not true
-        val stackObjSlot = locals.current
-
+        } else -1
 
         // Similar to before, increment used locals, add label, capture local, and store.
         val capturedLocalSlots = requiredLocals.map { original ->
-            val slot = locals.increment()
+            val localType = frame.locals[original]!!
+
+            val slot = locals.increment(TypeSort.OBJECT)
 
             instructions.add(LabelNode(Label()))
 
-            captureLocal(original, frame.locals[original]!!, instructions)
+            captureLocal(original, localType, instructions)
 
             instructions.add(VarInsnNode(ASTORE, slot))
 
@@ -488,13 +540,13 @@ public class InstructionInjector(
         }
 
         // Instantiate the mixin flow object (label, new, and store)
-        val mixinFlowObjSlot = locals.increment()
+        val mixinFlowObjSlot = locals.increment(TypeSort.OBJECT)
         instructions.add(LabelNode(Label()))
         instantiateFlowObj(instructions)
         instructions.add(VarInsnNode(ASTORE, mixinFlowObjSlot))
 
         // Accumulator
-        val accumulatorSlot = locals.increment()
+        val accumulatorSlot = locals.increment(TypeSort.OBJECT)
 
         instructions.add(LabelNode(Label()))
         instructions.add(TypeInsnNode(NEW, MixinFlow.Result::class.internalName))
@@ -629,54 +681,78 @@ public class InstructionInjector(
             releaseLocal(objSlot, original, frame.locals[original]!!, instructions)
         }
 
-        if (capturedStack) {
+        if (capturesStack) {
             instructions.add(LabelNode(Label()))
-            releaseStack(stackObjSlot, frame.stack, instructions)
+            releaseStack(
+                stackObjSlot,
+                capturedStack,
+                instructions
+            )
         }
 
         return instructions
     }
 
-    private fun checkConditions(
-        isStatic: Boolean,
-        requiredLocals: List<Int>,
-        all: List<InstructionInjectionData>,
-        frame: SimulatedFrame
+    private fun checkValidity(
+        data: InstructionInjectionData,
+        locals: List<Int>,
+        frame: SimulatedFrame,
     ) {
-        if (!isStatic && requiredLocals.contains(0)) {
-            val mixin = all.first {
-                it.capturedLocals.contains(0)
-            }
-
-            throw CodeInjectionException(
-                "Mixin: '${mixin.mixinClass}' contains code injection: '${mixin.mixinMethod.method()}' which requests local 0. This method is not static and so cannot capture type 'this'. Locals should be 1 based for non static methods."
-            )
-        }
-
-        val maxLocal = requiredLocals.maxOrNull() ?: 0
-        if (maxLocal > frame.locals.size - 1) {
-            val mixin = all.first {
-                it.capturedLocals.contains(maxLocal)
-            }
-            throw CodeInjectionException(
-                "Mixin: '${mixin.mixinClass}' contains code injection: '${mixin.mixinMethod.method()}' which requests " +
-                        "more locals than are present by its point of injection. The available locals are: '${frame.locals}'. " +
-                        "This mixin requests a local of slot: '$maxLocal'."
-            )
-        }
-
         val flowResultType = Type.getType(MixinFlow.Result::class.java)
 
-        for (it in all) {
-            val returnType = it.mixinMethod.method().returnType
+        // Check that no local exceeds the max local size
+        val maxRequestedLocals = locals.maxOrNull() ?: 0
+        if (maxRequestedLocals > (frame.locals.keys.maxOrNull() ?: 0)) {
+            throw CodeInjectionException(
+                "Mixin: '${data.mixinClass}' contains code injection: '${data.mixinMethod.method()}' which requests " +
+                        "more locals than are present by its point of injection. The available locals are: '${frame.locals}'. " +
+                        "This mixin requests a local of slot: '$maxRequestedLocals'."
+            )
+        }
 
-            if (returnType != Type.VOID_TYPE && returnType != flowResultType) {
+        // Check that the mixin returns either void or MixinFlow.Result
+        val returnType = data.mixinMethod.method().returnType
+
+        if (returnType != Type.VOID_TYPE && returnType != flowResultType) {
+            throw CodeInjectionException(
+                "Mixin: '${data.mixinClass}' contains code injection: '${data.mixinMethod.method()}' and " +
+                        "specifies a return type of '${returnType}'. The return type for a code " +
+                        "injection method should either be 'void' or 'MixinFlow.Result'."
+            )
+        }
+
+        // Local checks
+        val signature = data.mixinMethod.signature
+        if (signature != null) {
+            // Infer locals
+            val inferredLocals = inferLocalsFromSignature(
+                signature
+            )
+
+            // Check that the mixin defines as many 'Captured's as it requests in the annotation.
+            if (inferredLocals.size != locals.size) {
                 throw CodeInjectionException(
-                    "Mixin: '${it.mixinClass}' contains code injection: '${it.mixinMethod.method()}' and " +
-                            "specifies a return type of '${returnType}'. The return type for a code " +
-                            "injection method should either be 'void' or 'MixinFlow.Result'."
+                    "Mixin: '${data.mixinClass}' contains code injection: '${data.mixinMethod.method()}' which defines a different " +
+                            "amount of locals to capture in its @InjectCode annotation than it does in its method signature. Expected to" +
+                            "find '${locals.size}' parameters matching: 'Captured<...>' but found '${inferredLocals.size}'"
                 )
             }
+
+            locals
+                .zip(inferredLocals)
+                .map { (slot, inferred) ->
+                    IndexedValue(slot, frame.locals[slot]!! to inferred.toValueRef())
+                }
+                .forEach { (slot, it) ->
+                    val (inferred: JvmValueRef, actual: JvmValueRef) = it
+                    if (!inferred.boxableTo(actual)) {
+                        throw CodeInjectionException(
+                            "Mixin: '${data.mixinClass}' contains code injection: '${data.mixinMethod.method()}' which requests to capture a local" +
+                                    "variable in slot: '$slot' (if your mixin is non static, you've probably defined it as slot '${slot - 1}') with type: " +
+                                    "'$inferred' but the actual type in local slot '$slot' is '$actual'."
+                        )
+                    }
+                }
         }
     }
 
@@ -755,7 +831,10 @@ public class InstructionInjector(
         } else if (invoke) {
             InvocationSelector(
                 select.invoke.cls,
-                methodFromDesc(select.invoke.method),
+                methodFromDesc(
+                    // Normalizing return type
+                    select.invoke.method.substringBeforeLast(")") + ")V"
+                ),
                 select.invoke.opcode.takeUnless { it == -1 },
             )
         } else if (field) {
@@ -789,94 +868,125 @@ public class InstructionInjector(
         }
     }
 
-    private fun findDestMethod(
-        mixinMethod: Method,
+    private fun inferTargetMethod(
+        mixinMethod: MethodNode,
+        // Could be empty, an internal type ('name(<internal type params>)') or a fancy type ('name (<classnames>)')
         given: String,
-        destination: ClassNode,
-        mixinClass: () -> ClassReference
     ): Method {
-//        fun isMixinRelatedParameter(type: Type): Boolean {
-//            val isLocal = type == Type.getType(Captured::class.java)
-//            val isFlow = type == Type.getType(MixinFlow::class.java)
-//
-//            return isLocal || isFlow
-//        }
+        val name = given
+            .substringBefore("(")
+            .substringBefore(" ")
+            .takeUnless { it.isBlank() }
+            ?: mixinMethod.name
 
-        val method = if (given.isEmpty()) {
-            // TODO infer parameters? possible with extra byte code analysis
-            Method(
-                mixinMethod.name,
-                "()V"
+        if (given.contains(" ")) {
+            val curr = if (given.count { ch -> ch == ' ' } == 2) {
+                given.substringAfter(" ")
+            } else given
+
+            return Method.getMethod("void $name ${curr.substringAfter(" ")}")
+        }
+
+        val descriptor = if (given.contains("(")) {
+            "(" + given.substringAfter("(")
+        } else
+        // FIXME: This will also incldue locals, not just parameters.
+            inferLocalsFromSignature(mixinMethod.signature).joinToString(
+                prefix = "(",
+                separator = "",
+                postfix = ")V"
             )
-        } else {
-            // If it contains a space then parse it semantically, otherwise like an internal method, or just the name
-            if (given.contains(" ")) {
-                val spaces = given.count { it == ' ' }
-                val methodName = if (spaces == 1) {
-                    "void $given"
-                } else if (spaces == 2) {
-                    given
-                } else {
-                    throw InvalidMixinException(
-                        mixinClass(),
-                        MixinExceptionCause.CodeInvalidMethodDescription,
-                        listOf("<package.ReturnType> <method name> (<package.Parameter...>)")
-                    )
-                }
 
-                Method.getMethod(methodName)
-            } else if (given.contains("(")) {
-                methodFromDesc(given)
+        return Method(name, descriptor.substringBefore(")") + ")V")
+    }
+
+    public companion object {
+        public fun findTargetMethod(
+            inferred: Method,
+            options: List<Method>,
+
+            ifErr: () -> Pair<ClassReference, ClassReference>
+        ): Method {
+            val method = inferred
+
+            val overloading = options
+                .filter { it.name == method.name }
+
+            if (overloading.isEmpty()) {
+                throw InvalidMixinException(
+                    ifErr().first,
+                    MixinExceptionCause.NoCodeMethodFound,
+                    listOf(method.name, ifErr().second.toString())
+                )
+            } else if (overloading.size == 1) {
+                return overloading[0]
+            } else if (overloading.any { it == inferred }) {
+                return inferred
             } else {
-//                val methodArgs = mixinMethod
-//                    .argumentTypes
-//                    .filterNot(::isMixinRelatedParameter)
+                val matchingMethods = method.argumentTypes
+                    .withIndex()
+                    .fold(overloading) { acc, arg ->
+                        acc.filter {
+                            it.argumentTypes.getOrNull(arg.index) == arg.value
+                        }
+                    }
 
-                Method(
-                    given,
-                    "()V"
-//                    "(${
-//                        methodArgs.joinToString(separator = "") { it.descriptor }
-//                    })${mixinMethod.returnType}"
+                if (matchingMethods.size == 1) {
+                    return matchingMethods[0]
+                } else if (matchingMethods.size > 1) {
+                    throw InvalidMixinException(
+                        ifErr().first,
+                        MixinExceptionCause.CodeMethodOverloadAmbiguity,
+                        listOf(method.name, matchingMethods.toString())
+                    )
+                } else throw InvalidMixinException(
+                    ifErr().first,
+                    MixinExceptionCause.NoCodeMethodFound,
+                    listOf(method.toString(), ifErr().second.toString())
                 )
             }
         }
 
-        val overloading = destination.methods
-            .map { it.method() }
-            .filter { it.name == method.name }
+        internal fun inferLocalsFromSignature(
+            signature: String?
+        ): List<Type> {
+            if (signature == null) return listOf()
 
-        if (overloading.isEmpty()) {
-            throw InvalidMixinException(
-                mixinClass(),
-                MixinExceptionCause.NoCodeMethodFound,
-                listOf(method.name, destination.ref().toString())
-            )
-        } else if (overloading.size == 1) {
-            return overloading[0]
-        } else {
-            val matchingMethods = method.argumentTypes
-                .withIndex()
-                .fold(overloading) { acc, arg ->
-                    acc.filter {
-                        it.argumentTypes.getOrNull(arg.index) == arg.value
-                    }
+            val reader = SignatureReader(signature)
+            val visitor = object : SignatureVisitor(ASM5) {
+                // States:
+                //  0 - nothing
+                //  parameter - 1
+                //  captured type - 2
+                var state = 0
+                val types = ArrayList<Type>()
+
+                override fun visitParameterType(): SignatureVisitor? {
+                    state = 1
+                    return super.visitParameterType()
                 }
 
-            if (matchingMethods.size == 1) {
-                return matchingMethods[0]
-            } else if (matchingMethods.size > 1) {
-                throw InvalidMixinException(
-                    mixinClass(),
-                    MixinExceptionCause.CodeMethodOverloadAmbiguity,
-                    listOf(method.name, matchingMethods.toString())
-                )
-            } else throw InvalidMixinException(
-                mixinClass(),
-                MixinExceptionCause.NoCodeMethodFound,
-                listOf(method.toString(), destination.ref().toString())
-            )
+                override fun visitClassType(name: String) {
+                    when (state) {
+                        1 -> {
+                            if (name == Captured::class.internalName)
+                                state = 2
+                        }
+
+                        2 -> {
+                            types.add(Type.getObjectType(name))
+                            state = 0
+                        }
+                    }
+                    super.visitClassType(name)
+                }
+            }
+
+            reader.accept(visitor)
+
+            return visitor.types
         }
+
     }
 
     private data class InjectCodeData(
@@ -905,7 +1015,6 @@ public class InstructionInjector(
 
     private data class OpcodeData(
         val opcode: Int?,
-//        val vars: List<Int>?,
         val ldc: String?,
     )
 
@@ -926,7 +1035,7 @@ public data class InstructionInjectionData(
     val mixinClass: ClassReference,
 
     val mixinMethod: MethodNode,
-    val requestedMethod: String,
+    val inferredTarget: Method,
 
     val injectionType: InjectionType,
     val point: InjectionPoint,
