@@ -94,10 +94,10 @@ class TestCapturing {
             fun injected(
                 stack: Stack,
             ) {
-                println(stack.iterator().asSequence().toList())
-                stack.set(0, "Way")
-                stack.set(1, 11)
-                stack.set(2, 21L)
+                println(stack.iterator().asSequence().withIndex().toList())
+                stack.setRelative(3, "Way")
+                stack.setRelative(2, 11)
+                stack.setRelative(1, 21L)
             }
         }
 

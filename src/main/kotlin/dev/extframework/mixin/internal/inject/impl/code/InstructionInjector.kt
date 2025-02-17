@@ -479,7 +479,8 @@ public class InstructionInjector(
 
         fun findLocalSlot(slot: Int): Int {
             return sortedLocals[
-                slot + if (isStatic) 0 else 1
+                slot
+//                slot + if (isStatic) 0 else 1
             ].key
         }
 
@@ -497,13 +498,6 @@ public class InstructionInjector(
             )
         }
 
-        val capturedStack = if (!isStatic) {
-            frame.stack.toMutableList()
-                .apply {
-                    removeFirst()
-                }
-        } else frame.stack
-
         // Stack slot, this won't be a valid value if capturedStack is not true
         val stackObjSlot = if (capturesStack) {
             // Increment slot and capture
@@ -515,7 +509,7 @@ public class InstructionInjector(
 
             // Capture the stack and store the resulting value as a local.
             captureStack(
-                capturedStack,
+                frame.stack,
                 locals,
                 instructions
             )
@@ -685,7 +679,7 @@ public class InstructionInjector(
             instructions.add(LabelNode(Label()))
             releaseStack(
                 stackObjSlot,
-                capturedStack,
+                frame.stack,
                 instructions
             )
         }
