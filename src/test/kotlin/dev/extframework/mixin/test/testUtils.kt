@@ -1,7 +1,12 @@
 package dev.extframework.mixin.test
 
 import dev.extframework.common.util.make
-import dev.extframework.mixin.test.internal.analysis.CodeFlowTests
+import dev.extframework.mixin.MixinEngine
+import dev.extframework.mixin.RedefinitionFlags
+import dev.extframework.mixin.api.ClassReference
+import dev.extframework.mixin.engine.tag.ClassTag
+import dev.extframework.mixin.test.engine.analysis.CodeFlowTests
+import dev.extframework.mixin.test.engine.inject.impl.code.TestCapturing.Dest
 import org.objectweb.asm.ClassReader
 import org.objectweb.asm.ClassWriter
 import org.objectweb.asm.Type
@@ -49,6 +54,49 @@ fun Instrumentation.reload(
             bytes
         )
     )
+}
+
+class TrackingMixinEngine() : MixinEngine() {
+    val tracked: MutableSet<ClassReference> = HashSet<ClassReference>()
+
+    override fun registerMixin(tag: ClassTag, node: ClassNode): Set<ClassReference> {
+        val delta = super.registerMixin(tag, node)
+        tracked.addAll(delta)
+        return delta
+    }
+}
+
+fun MixinEngine.load(original: KClass<*>): Class<*> {
+//    val transformed = transform(
+//        classNode(
+//            original
+//        )
+//    )
+
+    val cl = object : ClassLoader(getSystemClassLoader().parent) {
+        override fun findClass(name: String): Class<*> {
+            findLoadedClass(name)?.let { return it }
+
+            val stream = THIS::class.java.getResourceAsStream("/${name.replace('.', '/')}.class")
+            val node = ClassNode()
+            ClassReader(stream).accept(node, ClassReader.EXPAND_FRAMES)
+
+           val transformed=  transform(node)
+            stripKotlinMetadata(transformed)
+
+            val writer = ClassWriter(ClassWriter.COMPUTE_FRAMES)
+            transformed.accept(writer)
+            val bytes = writer.toByteArray()
+
+            val pathName = name.substringAfterLast(".").replace("$", "_")
+
+            Path("class-output/$pathName.class").apply { make() }.writeBytes(bytes)
+
+            return defineClass(name, bytes, 0, bytes.size)
+        }
+    }
+
+    return cl.loadClass(original.java.name)
 }
 
 fun load(node: ClassNode): Class<*> {

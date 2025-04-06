@@ -93,7 +93,6 @@ class TestMixinEngine {
         )
 
         engine.transform(
-            Destination::class.java.name,
             classNode(Destination::class),
         )
     }
@@ -123,7 +122,6 @@ class TestMixinEngine {
             MixinExceptionCause.CodeMethodOverloadAmbiguity
         ) {
             engine.transform(
-                Destination::class.java.name,
                 classNode(Destination::class),
             )
         }
